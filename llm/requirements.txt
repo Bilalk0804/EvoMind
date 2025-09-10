@@ -2,3 +2,6 @@ langchain
 langchain-google-genai
 dotenv
 langchain-community
+langgraph
+typing-extensions
+grandalf
