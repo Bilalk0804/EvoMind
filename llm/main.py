@@ -1,63 +1,49 @@
 from dotenv import load_dotenv
 import os
+from typing import Annotated , Literal
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain.agents import create_tool_calling_agent,AgentExecutor
-from pydantic import BaseModel
+from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langgraph.graph.message import add_messages
+from langgraph.graph import StateGraph, START, END
+from pydantic import BaseModel, Field
+from typing_extensions import TypedDict
 
-from lanf
 load_dotenv()
 if not os.environ.get("GOOGLE_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 llm = init_chat_model("gemini-2.5-flash", model_provider="google_genai")
 
-# response = llm.invoke("Sing a ballad of LangChain.")
-# print(response.content)
-
-'''main model building starts from here'''
-
-class Response(BaseModel):
-    topic: str
-    summary: str
-    sources: list[str]
-    tools_used: list[str]
-parcer = PydanticOutputParser(pydantic_object=Response)
+class State(TypedDict):
+    messages: Annotated[list, add_messages]
+'''Type of info the grapg will carry to the next atates'''
+    
 
 
-prompt=ChatPromptTemplate.from_messages(
-  [
-  ("system",
-  """
-  You are a Youth Wellness Assistant.
-Your role is to provide empathetic, supportive, and non-clinical guidance to young people.
-Do not give medical or therapeutic advice, diagnosis, or treatment.
-Instead, focus on:
+'''state is a bunch of messages of type list'''
+graph_builder=StateGraph(State)
 
-Active listening and showing empathy.
+def chatbot(state:State):
+    return {"messages":[llm.invoke(state["messages"])]}
 
-Motivational nudges (e.g., “remember to take a break,” “stay hydrated,” “you’re doing your best”).
+graph_builder.add_node("chatbot",chatbot)
 
-Sharing general resources (articles, self-help guides, wellness apps).
+graph_builder.add_edge(START,"chatbot")
 
-Encouraging healthy habits (rest, exercise, journaling, mindfulness).
+graph_builder.add_edge("chatbot",END)
 
-Suggesting coping skills (deep breathing, grounding techniques, positive affirmations).
+graph=graph_builder.compile()
 
-Including disclaimers when sensitive topics arise, reminding the user you are not a therapy bot.
+user_input=input("enter a query:: ")
 
-If a user mentions urgent distress, encourage them to reach out to a trusted adult, counselor, or local emergency helpline.
+state=graph.invoke({"messages":[{"role":"user","content":user_input}]})
 
-Tone: Supportive, kind, empathetic, and encouraging.
-Boundaries: No medical advice, no diagnoses, no therapy.
-   
-   """),
-  ("placeholder", "{chat_history}"),
-  ("human", "{query}"),
-  ("placeholder", "{agent_scratchpad}")
-    ]).partial(format_instructions=parcer.get_format_instructions())
+#print(state["messages"][-1].content)
+#print(state["messages"])
+graph_representation = graph.get_graph()
+graph_representation.print_ascii()
 
-tools=[search_tool,wiki_tool]
 
 '''Things to be added later '''
 '''
@@ -65,41 +51,27 @@ Motivational Nudge Generator
 
 Random gentle reminders: hydrate, stretch, rest, smile, breathe.
 
-Can be context-aware (if user says "I'm tired," suggest rest).
+Live knowledge graph
 
-Mood Tracker
+Notion and its related functionalities:
+Daily dairy
+Mode tracker
+Self care
+Coping Tools
+Notes and Resources
+Progress and report
 
-Simple check-in: “How are you feeling today? (happy, sad, anxious, okay)”
+'''
 
-Graph over time to spot patterns.
+'''
+Cloud based services via api
 
-Wellness Resource Recommender
+Dialogflow: A more structured platform for building conversational interfaces. 
+You can use it to create specific, goal-oriented conversations. For example, a user who 
+says "I'm feeling anxious" could be guided through a specific flow you've designed to help them with 
+anxiety, with Dialogflow handling the conversation logic.
 
-Share links to safe resources (e.g., mindfulness apps, helplines, motivational videos, journaling prompts).
-
-Micro-Coping Exercises
-
-Breathing exercises (box breathing, 4-7-8).
-
-Quick gratitude prompts (“name 3 things you’re grateful for”).
-
-Small mindfulness practices.
-
-Reflection Journal Tool
-
-Daily/weekly prompts for self-reflection.
-
-Users can store and revisit their responses.
-
-Disclaimers + Safety Net
-
-Clear disclaimers when topics get sensitive.
-
-Always encourage reaching out to real people (friends, family, professionals) when needed.
-
-Gamified Wellness Goals
-
-Daily challenges (drink 8 glasses of water, take a 5-min walk).
-
-Reward system (streaks, badges).
+Speech-to-Text & Text-to-Speech: To enable a voice-based interaction, these APIs are essential. 
+Speech-to-Text transcribes the user's spoken words into text for your chatbot to process, and Text-to-Speech 
+converts the chatbot's text responses into a natural-sounding voice.
 '''
