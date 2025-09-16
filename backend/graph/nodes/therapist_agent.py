@@ -1,6 +1,6 @@
 from langchain_core.prompts import ChatPromptTemplate
 from models.llm import llm
-from typing import Any , Literal
+from typing import Any
 
 def therapist_agent(state: dict[str, Any]) -> dict[str, Any]:
     """Therapist agent: empathetic, supportive companion"""

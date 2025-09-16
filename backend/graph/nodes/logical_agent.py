@@ -1,6 +1,6 @@
 from langchain_core.prompts import ChatPromptTemplate
 from models.llm import llm
-from typing import Any , Literal
+from typing import Any
 
 def logical_agent(state: dict[str, Any]) -> dict[str, Any]:
     """Logical agent: structured reasoning and problem-solving"""
