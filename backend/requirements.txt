@@ -1,7 +1,25 @@
-langchain
-langchain-google-genai
-dotenv
-langchain-community
-langgraph
-typing-extensions
-grandalf
+# Core LangChain packages
+langchain>=0.1.0
+langchain-community>=0.0.20
+langchain-experimental>=0.0.50
+langgraph>=0.0.40
+
+# LangChain integrations
+langchain-google-genai>=1.0.0
+langchain-groq>=0.1.0
+langchain-neo4j>=0.1.0
+
+# Database
+neo4j>=5.0.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Document processing
+PyPDF2>=3.0.0
+python-docx>=0.8.11
+unstructured>=0.10.0
+
+# Utilities
+typing-extensions>=4.0.0
+grandalf>=0.6
