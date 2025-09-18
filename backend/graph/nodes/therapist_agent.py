@@ -1,4 +1,5 @@
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import AIMessage
 from models.llm import llm
 from typing import Any
 
@@ -45,5 +46,12 @@ def therapist_agent(state: dict[str, Any]) -> dict[str, Any]:
             '''
     )
     formatted_prompt = prompt.format_prompt(user_query=state["messages"][-1].content)
-    response = llm.invoke(formatted_prompt.to_messages())
+    final_text_parts: list[str] = []
+    for chunk in llm.stream(formatted_prompt.to_messages()):
+        text = getattr(chunk, "content", None) or getattr(chunk, "text", "") or ""
+        if text:
+            print(text, end="", flush=True)
+            final_text_parts.append(text)
+    print()
+    response = AIMessage(content="".join(final_text_parts))
     return {"messages": state["messages"] + [response], "message_type": state["message_type"]}
