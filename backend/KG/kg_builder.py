@@ -20,7 +20,7 @@ from langchain_community.document_loaders import (
     PyPDFLoader, TextLoader, UnstructuredWordDocumentLoader
 )
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 import re
 import hashlib
@@ -37,7 +37,7 @@ class RobustKnowledgeGraphBuilder:
         try:
             self.llm = ChatGroq(
                 groq_api_key=groq_api_key,
-                model_name="llama-3.1-8b-instant",
+                model_name="gemma2-9b-it",
                 temperature=0.1,
                 max_tokens=4096
             )

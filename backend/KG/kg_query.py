@@ -22,7 +22,7 @@ from langchain_neo4j import Neo4jGraph
 from langchain.chains import GraphCypherQAChain
 from langchain_core.messages import HumanMessage
 
-from config import Config
+# Removed unused Config import
 
 class RobustKnowledgeGraphQuery:
     """
@@ -1045,11 +1045,56 @@ Provide a brief, focused answer.
         
         return unique_keywords[:12]  # Return top 12 keywords
     
+    def _sanitize_cypher_input(self, input_text: str) -> str:
+        """Sanitize input to prevent Cypher injection and malformed queries."""
+        if not input_text:
+            return ""
+        
+        # Remove problematic phrases that cause syntax errors
+        problematic_phrases = [
+            "here's a list of search terms based on the question:",
+            "here are search terms:",
+            "search terms:",
+            "based on the question:",
+            "- experiencing",
+            "- feeling", 
+            "- emotions",
+            "- person",
+            "- mental state",
+            "- emotional state",
+            "- present moment"
+        ]
+        
+        cleaned = input_text.lower().strip()
+        
+        # Remove problematic phrases
+        for phrase in problematic_phrases:
+            cleaned = cleaned.replace(phrase, "")
+        
+        # Remove special characters that can break Cypher
+        import re
+        cleaned = re.sub(r'[^\w\s-]', '', cleaned)
+        
+        # Remove extra whitespace and dashes
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = re.sub(r'^-+\s*', '', cleaned)  # Remove leading dashes
+        
+        # Only return if it's a valid single word/phrase
+        if len(cleaned.split()) <= 3 and len(cleaned) >= 2:
+            return cleaned
+        
+        return ""
+    
     def _search_exact_matches(self, keyword: str) -> list:
         """Search for exact keyword matches with comprehensive multi-node traversal."""
+        # Sanitize keyword to prevent Cypher injection
+        sanitized_keyword = self._sanitize_cypher_input(keyword)
+        if not sanitized_keyword or len(sanitized_keyword.strip()) < 2:
+            return []
+            
         search_query = f"""
         MATCH (n) 
-        WHERE toLower(n.id) CONTAINS toLower('{keyword}')
+        WHERE toLower(n.id) CONTAINS toLower('{sanitized_keyword}')
         WITH n
         MATCH (n)-[r1]-(connected1)
         OPTIONAL MATCH (connected1)-[r2]-(connected2)
@@ -1071,13 +1116,20 @@ Provide a brief, focused answer.
     
     def _search_partial_matches(self, keyword: str) -> list:
         """Search for partial matches with multi-node relationship expansion."""
-        # Split keyword into parts for better matching
-        parts = keyword.split()
+        # Sanitize and split keyword into parts for better matching
+        sanitized_keyword = self._sanitize_cypher_input(keyword)
+        if not sanitized_keyword:
+            return []
+            
+        parts = sanitized_keyword.split()
         search_conditions = []
         
         for part in parts:
             if len(part) > 2:
-                search_conditions.append(f"toLower(n.id) CONTAINS toLower('{part}')")
+                # Additional sanitization for each part
+                clean_part = self._sanitize_cypher_input(part)
+                if clean_part:
+                    search_conditions.append(f"toLower(n.id) CONTAINS toLower('{clean_part}')")
         
         if not search_conditions:
             return []
@@ -1147,14 +1199,16 @@ Provide a brief, focused answer.
             response = self.llm.invoke([message])
             search_terms = [term.strip().lower() for term in response.content.split('\n') if term.strip()]
             
-            # Create dynamic search query
+            # Create dynamic search query with sanitization
             search_conditions = []
             for term in search_terms[:8]:  # Limit to top 8 terms
-                search_conditions.extend([
-                    f"toLower(type(r)) CONTAINS '{term}'",
-                    f"toLower(n.id) CONTAINS '{term}'",
-                    f"toLower(connected.id) CONTAINS '{term}'"
-                ])
+                clean_term = self._sanitize_cypher_input(term)
+                if clean_term:
+                    search_conditions.extend([
+                        f"toLower(type(r)) CONTAINS '{clean_term}'",
+                        f"toLower(n.id) CONTAINS '{clean_term}'",
+                        f"toLower(connected.id) CONTAINS '{clean_term}'"
+                    ])
             
             if not search_conditions:
                 return []
@@ -1179,15 +1233,20 @@ Provide a brief, focused answer.
         if not keywords:
             return []
         
-        # Create search conditions for multiple keywords
+        # Create search conditions for multiple keywords with sanitization
         keyword_conditions = []
         for keyword in keywords[:8]:  # Increased limit for better coverage
-            keyword_conditions.extend([
-                f"toLower(n.id) CONTAINS toLower('{keyword}')",
-                f"toLower(connected.id) CONTAINS toLower('{keyword}')",
-                f"toLower(type(r)) CONTAINS toLower('{keyword}')"
-            ])
+            clean_keyword = self._sanitize_cypher_input(keyword)
+            if clean_keyword:
+                keyword_conditions.extend([
+                    f"toLower(n.id) CONTAINS toLower('{clean_keyword}')",
+                    f"toLower(connected.id) CONTAINS toLower('{clean_keyword}')",
+                    f"toLower(type(r)) CONTAINS toLower('{clean_keyword}')"
+                ])
         
+        if not keyword_conditions:
+            return []
+            
         search_query = f"""
         MATCH (n)-[r]-(connected)
         WHERE {' OR '.join(keyword_conditions)}

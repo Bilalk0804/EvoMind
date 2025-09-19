@@ -27,3 +27,8 @@ grandalf>=0.6
 # MCP and Notion
 mcp>=0.1.0
 notion-client>=2.2.1
+
+# Vector Database
+chromadb>=0.4.0
+langchain-chroma>=0.1.0
+faiss-cpu>=1.7.0

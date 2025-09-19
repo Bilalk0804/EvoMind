@@ -1,185 +1,184 @@
 from graph.agent import build_graph
+from langchain_core.messages import HumanMessage
+import sys
 
-# -------------------- Setup --------------------
-# load_dotenv()
-# if not os.environ.get("GOOGLE_API_KEY"):
-#     os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-
-# llm = init_chat_model("gemini-2.5-flash", model_provider="google_genai",temperature=0.5)
-
-# -------------------- State Definitions --------------------
-# class MessageClassifier(BaseModel):
-#     message_type: Literal['Logic','Therapist'] = Field(
-#         ...,
-#         description="classify that user require an emotional (therapist) or logical response"
-#     )
-
-# class State(TypedDict):
-#     messages: Annotated[list, add_messages]
-#     message_type: str | None
+def main():
+    """
+    Main entry point for the new conversation flow system.
     
-# '''Type of info the graph will carry to the next states'''
+    The system follows this flow:
+    1. User enters prompt
+    2. System queries Vector Database
+    3. LLM1 analyzes prompt and generates clarifying questions
+    4. Questions shown to user, user provides responses
+    5. Q&A pairs stored in Knowledge Graph
+    6. LLM2 processes Knowledge Graph to extract root problem
+    7. Decision 1: If root problem not discovered → ask for more info → loop back
+    8. If root problem discovered → check proximity
+    9. Decision 2: If proximity low → simple response (no storage)
+    10. If proximity high → comprehensive response → store in Vector DB + update KG
+    """
+    print("🚀 Starting Enhanced Conversation System")
+    print("=" * 50)
+    print("This system will:")
+    print("1. Analyze your question and ask clarifying questions")
+    print("2. Extract the root problem from your responses")
+    print("3. Provide either a simple or comprehensive answer based on relevance")
+    print("4. Store relevant Q&A pairs for future reference")
+    print("=" * 50)
+    print()
     
-# class Person(BaseModel):
-#     name: str = Field(..., description="name of the person")
-#     # add things which we feel like adding and want llm to remember
-
-
-# '''state is a bunch of messages of type list'''
-# graph_builder = StateGraph(State)
-
-# # -------------------- Nodes --------------------
-# def classify_message(state: State) -> State:
-#     """Classifier: decides whether user query needs Logic or Therapist response"""
-#     last_message = state["messages"][-1].content
+    # Build the conversation graph
+    try:
+        graph = build_graph()
+        print("✅ Conversation graph initialized successfully")
+    except Exception as e:
+        print(f"❌ Failed to initialize conversation graph: {e}")
+        sys.exit(1)
     
-#     classifier_llm = llm.with_structured_output(MessageClassifier)
+    # Initialize conversation state
+    conversation_state = {
+        "messages": [],
+        "original_question": None,
+        "clarifying_questions": None,
+        "needs_more_info": None,
+        "similar_qa_pairs": None,
+        "qa_pairs": None,
+        "qa_collected": None,
+        "root_problem": None,
+        "problem_discovered": None,
+        "confidence": None,
+        "supporting_evidence": None,
+        "kg_context": None,
+        "kg_confidence": None,
+        "proximity_score": None,
+        "proximity_level": None,
+        "proximity_reasoning": None,
+        "should_store_qa": None,
+        "storage_reason": None,
+        "final_response": None,
+        "response_type": None,
+        "kg_ingested": None
+    }
     
-#     result = classifier_llm.invoke([
-#         {    
-#             "role":"system",
-#             "content":"""
-# Classify the following message as either "Logic" or "Therapist".
+    # Main conversation loop
+    while True:
+        try:
+            # Get user input
+            user_input = input("\n💬 Your question: ").strip()
+            
+            if not user_input:
+                print("Please enter a question.")
+                continue
+            
+            if user_input.lower() in ['exit', 'quit', 'q']:
+                print("👋 Goodbye!")
+                break
+            
+            # Add user message to conversation
+            conversation_state["messages"].append(HumanMessage(content=user_input))
+            
+            print("\n🤔 Processing your question...")
+            print("🔍 Analyzing with LLM1 and querying vector database...")
+            
+            # Interactive conversation flow
+            current_state = conversation_state
+            max_questions = 5
+            questions_asked = 0
+            
+            while questions_asked < max_questions:
+                # Run one step of the graph
+                try:
+                    result_state = graph.invoke(current_state)
+                    
+                    # Check if we got a response that needs user input
+                    if result_state.get("response_type") == "asking_for_more_info":
+                        # Display the question to user
+                        if result_state.get("messages"):
+                            last_message = result_state["messages"][-1]
+                            print(f"\n🤖 {last_message.content}")
+                        
+                        # Get user's answer
+                        user_answer = input("\n💭 Your answer: ").strip()
+                        
+                        if user_answer.lower() in ['exit', 'quit', 'q']:
+                            print("👋 Goodbye!")
+                            return
+                        
+                        if not user_answer:
+                            print("Please provide an answer to continue.")
+                            continue
+                        
+                        # Add user's answer to conversation
+                        result_state["messages"].append(HumanMessage(content=user_answer))
+                        current_state = result_state
+                        questions_asked += 1
+                        
+                    else:
+                        # We got a final response, break out of question loop
+                        current_state = result_state
+                        break
+                        
+                except Exception as e:
+                    print(f"❌ Error during conversation: {e}")
+                    break
+            
+            # Display the final response
+            if current_state.get("messages") and len(current_state["messages"]) > 0:
+                final_message = current_state["messages"][-1]
+                if current_state.get("response_type") != "asking_for_more_info":
+                    print(f"\n🤖 Final Response: {final_message.content}")
+            
+            # Show system insights (for debugging/transparency)
+            if current_state.get("response_type"):
+                print(f"\n📊 Response Type: {current_state['response_type']}")
+            
+            if current_state.get("root_problem"):
+                print(f"🎯 Root Problem: {current_state['root_problem']}")
+            
+            if current_state.get("proximity_score") is not None:
+                print(f"🔗 Proximity Score: {current_state['proximity_score']:.2f} ({current_state.get('proximity_level', 'unknown')})")
+            
+            if current_state.get("should_store_qa"):
+                print(f"💾 Stored in database: {current_state.get('storage_reason', 'High proximity')}")
+            else:
+                print("📝 Not stored (low proximity to original question)")
+            
+            # Reset for next conversation
+            conversation_state = {
+                "messages": [],
+                "original_question": None,
+                "clarifying_questions": None,
+                "current_question_index": 0,
+                "conversation_memory": None,
+                "answered_questions": None,
+                "needs_more_info": None,
+                "similar_qa_pairs": None,
+                "qa_pairs": None,
+                "qa_collected": None,
+                "root_problem": None,
+                "problem_discovered": None,
+                "confidence": None,
+                "supporting_evidence": None,
+                "kg_context": None,
+                "kg_confidence": None,
+                "proximity_score": None,
+                "proximity_level": None,
+                "proximity_reasoning": None,
+                "should_store_qa": None,
+                "storage_reason": None,
+                "final_response": None,
+                "response_type": None,
+                "kg_ingested": None
+            }
+            
+        except KeyboardInterrupt:
+            print("\n\n👋 Goodbye!")
+            break
+        except Exception as e:
+            print(f"\n❌ An error occurred: {e}")
+            print("Please try again with a different question.")
+            continue
 
-# Definitions:
-# - Logic: factual, reasoning-based, or task-oriented, practical analysis, logical and analysis
-# - Therapist: expresses feelings, mood, stress, or self-doubt
-#             """
-#         },
-#         {"role":"user","content":last_message}
-#     ])
-    
-#     return {"messages": state["messages"], "message_type": result.message_type}
-    
-    
-# def router(state: State):
-#     """Router: directs to logical_agent or therapist_agent"""
-#     if state["message_type"] == "Logic":
-#         return "logical_agent"
-#     return "therapist_agent"
-    
-
-# def logical_agent(state: State) -> State:
-#     """Logical agent: structured reasoning and problem-solving"""
-#     prompt = ChatPromptTemplate.from_template(
-#         '''
-# You are a logical reasoning assistant. 
-# - Provide clear, factual, and step-by-step analysis.  
-# - Focus on problem-solving, reasoning, and clarity.  
-# - If it's a question, explain logically like a teacher or problem solver.  
-# - Keep responses structured and concise.  
-
-# User query: {user_query}
-# '''
-#     )
-#     formatted_prompt = prompt.format_prompt(user_query=state["messages"][-1].content)
-#     response = llm.invoke(formatted_prompt.to_messages())
-#     return {"messages": state["messages"] + [response], "message_type": state["message_type"]}
-    
-    
-# def therapist_agent(state: State) -> State:
-#     """Therapist agent: empathetic, supportive companion"""
-#     prompt = ChatPromptTemplate.from_template(
-#         '''
-# You are a warm, supportive, and empathetic mental wellness companion. 
-# Your purpose is to listen, uplift, and gently guide people toward positivity and resilience.
-
-# Tone & Style:
-# Kind, encouraging, and non-judgmental
-# Easy-to-understand, friendly, and calming
-# Balance emotional support with gentle logic when needed
-
-# Core Abilities:
-
-# Message Classification:
-# Identify if the user’s message is logical (factual, problem-solving, seeking information) or emotional (feelings, stress, self-doubt, overwhelm).
-# Respond accordingly with empathy or clarity.
-
-# Emotional Support:
-# If the message is emotional → validate feelings, offer encouragement, remind them they are not alone, and suggest calming reflections.
-
-# Positive Reminders:
-# Share gentle affirmations and reminders, such as:
-# “You’re making progress, even if it feels slow.”
-# “Your feelings are valid, and it’s okay to take breaks.”
-# “You bring value to the lives of others.”
-
-# Logical Support:
-# If the message is logical → provide clear, structured responses, and help with problem-solving in a calm, supportive way.
-
-# Boundaries:
-# Stay within general wellness and positivity.
-# If the user expresses harmful thoughts, encourage them to seek professional help or reach out to a trusted person.
-
-# Example Flow:
-# User: “I feel like I’m not good enough.”
-# Bot: “I hear how heavy that feels. Please remember, your worth isn’t defined by one moment. 
-# You’ve overcome challenges before, and you’re stronger than you realize.🌸”
-
-# User query: {user_query}
-# '''
-#     )
-#     formatted_prompt = prompt.format_prompt(user_query=state["messages"][-1].content)
-#     response = llm.invoke(formatted_prompt.to_messages())
-#     return {"messages": state["messages"] + [response], "message_type": state["message_type"]}
-
-
-# -------------------- Build Graph --------------------
-# graph_builder.add_node("classify_message", classify_message)
-# graph_builder.add_node("logical_agent", logical_agent)
-# graph_builder.add_node("therapist_agent", therapist_agent)
-
-# graph_builder.add_edge(START, "classify_message")
-# graph_builder.add_conditional_edges("classify_message", router, {
-#     "logical_agent": "logical_agent",
-#     "therapist_agent": "therapist_agent"
-# })
-# graph_builder.add_edge("logical_agent", END)
-# graph_builder.add_edge("therapist_agent", END)
-
-# graph = graph_builder.compile()
-
-# # -------------------- Run --------------------
-
-graph= build_graph()
-
-user_input = input("enter a query:: ")
-state = graph.invoke({"messages":[{"role":"user","content":user_input}], "message_type": None})
-print(state["messages"][-1].content)
-
-graph_representation = graph.get_graph()
-
-# Print the ASCII representation
-graph_representation.print_ascii()
-
-
-'''Things to be added later '''
-'''
-Motivational Nudge Generator
-
-Random gentle reminders: hydrate, stretch, rest, smile, breathe.
-
-Live knowledge graph
-
-Notion and its related functionalities:
-Daily diary
-Mood tracker
-Self care
-Coping Tools
-Notes and Resources
-Progress and report
-
-'''
-
-'''
-Cloud based services via API
-
-Dialogflow: A more structured platform for building conversational interfaces. 
-You can use it to create specific, goal-oriented conversations. For example, a user who 
-says "I'm feeling anxious" could be guided through a specific flow you've designed to help them with 
-anxiety, with Dialogflow handling the conversation logic.
-
-Speech-to-Text & Text-to-Speech: To enable a voice-based interaction, these APIs are essential. 
-Speech-to-Text transcribes the user's spoken words into text for your chatbot to process, and Text-to-Speech 
-converts the chatbot's text responses into a natural-sounding voice.
-'''
+if __name__ == "__main__":
+    main()
