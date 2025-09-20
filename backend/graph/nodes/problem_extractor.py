@@ -13,22 +13,30 @@ from KG.kg_query import RobustKnowledgeGraphQuery, get_credentials_from_env
 # Lazy import to avoid heavy init at import time
 _QUERY_SYSTEM = None
 
-class ProblemAnalysis(BaseModel):
+class PsychologicalAnalysis(BaseModel):
     root_problem: str = Field(
         ...,
-        description="The core root problem identified from the Q&A pairs"
+        description="The core psychological/emotional root problem identified from the Q&A pairs"
     )
     problem_discovered: bool = Field(
         ...,
-        description="Whether a clear root problem was discovered"
+        description="Whether a clear psychological root problem was discovered with high confidence"
     )
     confidence: float = Field(
         ...,
-        description="Confidence level (0.0-1.0) in the problem identification"
+        description="Confidence level (0.0-1.0) in the psychological problem identification. Must be >= 0.85 to be considered discovered"
+    )
+    psychological_pattern: str = Field(
+        ...,
+        description="The underlying psychological pattern or mental health aspect identified"
     )
     supporting_evidence: List[str] = Field(
         ...,
-        description="List of evidence from the Knowledge Graph that supports this problem"
+        description="List of evidence from the conversation that supports this psychological analysis"
+    )
+    recommended_approach: str = Field(
+        default="",
+        description="Brief therapeutic approach or intervention type recommended"
     )
 
 def _get_query_system():
@@ -97,51 +105,68 @@ def extract_root_problem(state: dict[str, Any]) -> dict[str, Any]:
                 "error": "Insufficient context for problem analysis"
             }
         
-        # Use LLM2 to analyze and extract the root problem
-        problem_llm = llm.with_structured_output(ProblemAnalysis)
+        # Use LLM2 to analyze and extract the root psychological problem
+        psychology_llm = llm.with_structured_output(PsychologicalAnalysis)
         
         analysis_prompt = f"""
-        You are LLM2, responsible for analyzing Q&A pairs and Knowledge Graph data to identify the root problem.
+        You are LLM2, a professional psychological analyst AI. Your role is to analyze conversation patterns and identify the ROOT PSYCHOLOGICAL PROBLEM.
         
-        Your task:
-        1. Analyze the Q&A pairs and Knowledge Graph context
-        2. Identify the underlying root problem the user is trying to solve
-        3. Determine if the problem is clearly identifiable
-        4. Provide confidence level and supporting evidence
+        CRITICAL RULES:
+        1. You are looking for PSYCHOLOGICAL/EMOTIONAL root causes, not surface problems
+        2. Only mark as "discovered" if confidence >= 0.85 (be very strict)
+        3. Focus on mental health patterns, emotional triggers, psychological defense mechanisms
+        4. Look for underlying trauma, attachment issues, cognitive distortions, or behavioral patterns
+        5. If you're not 85%+ confident, return problem_discovered=False
         
-        Q&A Analysis Context:
+        Your analysis approach:
+        - Identify emotional patterns and triggers
+        - Look for signs of anxiety, depression, trauma, attachment issues
+        - Analyze coping mechanisms and defense strategies
+        - Identify cognitive distortions or limiting beliefs
+        - Look for relationship patterns and social dynamics
+        - Consider developmental or childhood influences
+        
+        Q&A Conversation Analysis:
         {combined_context}
         
         Knowledge Graph Context:
-        {kg_context if kg_context else "No additional context available"}
+        {kg_context if kg_context else "No additional psychological context available"}
         
         Knowledge Graph Confidence: {kg_confidence}
         
-        Guidelines:
-        - Look for patterns, themes, and underlying issues in the Q&A pairs
-        - Consider the original question and how the answers relate to it
-        - Identify the core problem that the user is trying to address
-        - Be specific and actionable in your problem identification
-        - Only mark as "discovered" if you have high confidence (>=0.7)
-        - Provide concrete evidence from the data that supports your analysis
+        IMPORTANT: Only set problem_discovered=True if you can identify a clear psychological root cause with 85%+ confidence. 
+        If you need more information to understand the psychological pattern, set problem_discovered=False.
         
-        Focus on finding the real underlying issue, not just surface-level questions.
+        Examples of psychological root problems:
+        - Attachment anxiety from childhood abandonment
+        - Perfectionism masking fear of rejection
+        - Depression stemming from unprocessed grief
+        - Social anxiety from past trauma or bullying
+        - Codependency patterns in relationships
+        - Imposter syndrome from low self-worth
+        
+        Be a strict psychological analyst - only diagnose when you're very confident.
         """
         
         # Validate prompt content
         if not analysis_prompt.strip():
             raise ValueError("Empty analysis prompt generated")
         
-        result = problem_llm.invoke([
+        result = psychology_llm.invoke([
             {"role": "system", "content": analysis_prompt}
         ])
+        
+        # Enforce strict confidence threshold
+        problem_discovered = result.problem_discovered and result.confidence >= 0.85
         
         return {
             **state,
             "root_problem": result.root_problem,
-            "problem_discovered": result.problem_discovered,
+            "problem_discovered": problem_discovered,
             "confidence": result.confidence,
+            "psychological_pattern": result.psychological_pattern,
             "supporting_evidence": result.supporting_evidence,
+            "recommended_approach": result.recommended_approach,
             "kg_context": kg_context,
             "kg_confidence": kg_confidence
         }
@@ -159,14 +184,14 @@ def extract_root_problem(state: dict[str, Any]) -> dict[str, Any]:
 
 def needs_more_info(state: dict[str, Any]) -> dict[str, Any]:
     """
-    Determines if more information is needed based on problem discovery.
-    This is used in the decision flow.
+    Determines if more information is needed based on psychological problem discovery.
+    This is used in the decision flow - LLM1 continues asking until LLM2 is confident.
     """
     problem_discovered = state.get("problem_discovered", False)
     confidence = state.get("confidence", 0.0)
     
-    # If problem is not discovered or confidence is low, we need more info
-    needs_more = not problem_discovered or confidence < 0.7
+    # If psychological problem is not discovered or confidence is below 85%, we need more info
+    needs_more = not problem_discovered or confidence < 0.85
     
     return {
         **state,

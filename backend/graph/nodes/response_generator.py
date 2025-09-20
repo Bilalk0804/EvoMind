@@ -10,35 +10,37 @@ from models.llm import llm
 
 def generate_response_with_insights(state: dict[str, Any]) -> dict[str, Any]:
     """
-    HIGH PROXIMITY: LLM2 sends insights to LLM1 → LLM1 creates final response using all data.
-    This response will be stored in Vector DB and Knowledge Graph.
+    FINAL DIAGNOSIS: LLM2 found the root psychological problem → LLM1 delivers diagnosis and therapeutic advice.
+    This is when the psychiatrist tells the user what they discovered and gives tasks/advice.
     """
     try:
         original_question = state.get("original_question", "")
         root_problem = state.get("root_problem", "")
+        psychological_pattern = state.get("psychological_pattern", "")
         supporting_evidence = state.get("supporting_evidence", [])
-        kg_context = state.get("kg_context", "")
+        recommended_approach = state.get("recommended_approach", "")
+        confidence = state.get("confidence", 0.0)
         qa_pairs = state.get("qa_pairs", [])
         
-        # Build comprehensive context
+        # Build comprehensive context for the final diagnosis
         context_parts = []
         
         if original_question:
-            context_parts.append(f"Original Question: {original_question}")
+            context_parts.append(f"Original Concern: {original_question}")
         
         if root_problem:
-            context_parts.append(f"Root Problem Identified: {root_problem}")
+            context_parts.append(f"Root Psychological Problem: {root_problem}")
+        
+        if psychological_pattern:
+            context_parts.append(f"Psychological Pattern: {psychological_pattern}")
         
         if supporting_evidence:
-            context_parts.append("Supporting Evidence:")
+            context_parts.append("Evidence from our conversation:")
             for i, evidence in enumerate(supporting_evidence, 1):
                 context_parts.append(f"{i}. {evidence}")
         
-        if kg_context:
-            context_parts.append(f"Knowledge Graph Context: {kg_context}")
-        
         if qa_pairs:
-            context_parts.append("Q&A Analysis:")
+            context_parts.append("Our conversation analysis:")
             for i, qa_pair in enumerate(qa_pairs, 1):
                 context_parts.append(f"{i}. Q: {qa_pair.get('question', '')}")
                 context_parts.append(f"   A: {qa_pair.get('answer', '')}")
@@ -47,28 +49,33 @@ def generate_response_with_insights(state: dict[str, Any]) -> dict[str, Any]:
         
         prompt = ChatPromptTemplate.from_template(
             '''
-            You are LLM1, receiving insights from LLM2 about the user's root problem.
+            You are LLM1, a professional psychiatrist/counselor. LLM2 (your psychological analyst) has identified the user's root psychological problem with high confidence.
             
-            LLM2 has analyzed the user's responses and discovered a high-proximity match between their original question and the root problem.
+            Now you must deliver the diagnosis and provide therapeutic guidance, just like a real psychiatrist would.
             
-            Based on LLM2's analysis below, create a comprehensive, personalized response to the user's original question.
-            
-            Context and Analysis from LLM2:
+            LLM2's Psychological Analysis:
             {context}
             
-            Guidelines for LLM1:
-            - Address the original question directly and personally
-            - Incorporate LLM2's root problem insights seamlessly
-            - Use LLM2's supporting evidence to strengthen your response
-            - Be comprehensive, empathetic, and actionable
-            - Provide specific, practical advice
-            - Reference the Q&A analysis to show you understand their situation
+            Confidence Level: {confidence}%
             
-            Generate a thoughtful, well-structured response that demonstrates deep understanding of the user's specific needs.
+            Your role as LLM1 (Psychiatrist):
+            1. EXPLAIN THE DIAGNOSIS: Tell the user what psychological issue you've identified
+            2. VALIDATE THEIR EXPERIENCE: Show empathy and normalize their feelings
+            3. EXPLAIN THE PATTERN: Help them understand how this problem manifests
+            4. PROVIDE THERAPEUTIC TASKS: Give 3-5 specific, actionable therapeutic exercises or tasks
+            5. OFFER HOPE: Reassure them this is treatable and they can improve
+            
+            Structure your response like a real psychiatric consultation:
+            - "Based on our conversation, I've identified..."
+            - "This is a common psychological pattern where..."
+            - "Here's what I recommend you do to start healing..."
+            - "These exercises will help you..."
+            
+            Be professional, empathetic, and provide concrete therapeutic interventions.
             '''
         )
         
-        formatted_prompt = prompt.format_prompt(context=full_context)
+        formatted_prompt = prompt.format_prompt(context=full_context, confidence=int(confidence*100))
         
         # Stream the response
         final_text_parts = []

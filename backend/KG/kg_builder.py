@@ -25,6 +25,7 @@ from langchain_core.messages import HumanMessage
 import re
 import hashlib
 import json
+import time
 
 class RobustKnowledgeGraphBuilder:
     """
@@ -41,15 +42,34 @@ class RobustKnowledgeGraphBuilder:
                 temperature=0.1,
                 max_tokens=4096
             )
-            # Try Neo4j connection with fallback to mock
-            try:
-                self.graph = Neo4jGraph(url=neo4j_uri, username=neo4j_username, password=neo4j_password)
-                self.logger.info("✅ Connected to Neo4j successfully")
-            except Exception as neo4j_error:
-                self.logger.warning(f"Neo4j connection failed: {neo4j_error}")
-                self.logger.info("🔧 Using mock Neo4j for testing...")
-                from mock_neo4j import create_mock_graph
-                self.graph = create_mock_graph(neo4j_uri, neo4j_username, neo4j_password)
+            # Try multiple connection approaches for Neo4j
+            connection_successful = False
+            
+            # Try different connection configurations
+            connection_configs = [
+                {"url": neo4j_uri, "username": neo4j_username, "password": neo4j_password, "database": "neo4j"},
+                {"url": neo4j_uri, "username": neo4j_username, "password": neo4j_password},
+                {"url": neo4j_uri.replace("neo4j+s://", "bolt+s://"), "username": neo4j_username, "password": neo4j_password},
+                {"url": neo4j_uri.replace("neo4j+s://", "neo4j://"), "username": neo4j_username, "password": neo4j_password}
+            ]
+            
+            for i, config in enumerate(connection_configs):
+                try:
+                    self.logger.info(f"Trying Neo4j connection attempt {i+1}/4...")
+                    self.graph = Neo4jGraph(**config)
+                    # Test connection
+                    test_result = self.graph.query("RETURN 1 as test")
+                    self.logger.info(f"✅ Connected to Neo4j successfully with config {i+1}")
+                    connection_successful = True
+                    break
+                except Exception as e:
+                    self.logger.warning(f"Connection attempt {i+1} failed: {e}")
+                    continue
+            
+            if not connection_successful:
+                self.logger.error("❌ All Neo4j connection attempts failed")
+                self.logger.error("🚫 THERAPY SYSTEM REQUIRES REAL NEO4J - NO MOCK FALLBACK")
+                raise Exception(f"Failed to connect to Neo4j after all attempts")
             
             # Enhanced LLM Graph Transformer with detailed extraction
             self.llm_transformer = LLMGraphTransformer(
@@ -281,6 +301,465 @@ Focus on creating a comprehensive knowledge representation that preserves the do
         self.logger.info(f"  - Processing time: {results['processing_time']:.2f} seconds")
         
         return results
+    
+    def store_therapy_qa_pair(self, session_id: str, qa_number: int, question: str, answer: str, original_concern: str, user_id: str = "default_user"):
+        """OPTIMIZED: Store Q&A pair with minimal graph operations using single transaction"""
+        try:
+            timestamp = datetime.now().isoformat()
+            question_id = f"{session_id}_q{qa_number}"
+            answer_id = f"{session_id}_a{qa_number}"
+            
+            # SINGLE OPTIMIZED QUERY: Create all nodes and relationships in one transaction
+            optimized_query = """
+            // 1. Ensure User and Session exist (MERGE = create if not exists)
+            MERGE (u:User {user_id: $user_id})
+            ON CREATE SET u.created_at = $timestamp
+            
+            MERGE (s:Session {session_id: $session_id})
+            ON CREATE SET s.timestamp = $timestamp, s.status = 'active', s.original_concern = $original_concern
+            
+            MERGE (u)-[:HAS_SESSION]->(s)
+            
+            // 2. Create Question and Answer nodes (only if they don't exist)
+            MERGE (q:Question {q_id: $question_id})
+            ON CREATE SET q.text = $question, q.timestamp = $timestamp
+            
+            MERGE (a:Answer {a_id: $answer_id})
+            ON CREATE SET a.text = $answer, a.timestamp = $timestamp
+            
+            // 3. Create relationships
+            MERGE (s)-[:ASKED]->(q)
+            MERGE (q)-[:ANSWERED_BY]->(a)
+            
+            RETURN u, s, q, a
+            """
+            
+            # Execute single optimized query
+            result = self.graph.query(optimized_query, {
+                "user_id": user_id,
+                "session_id": session_id,
+                "timestamp": timestamp,
+                "question_id": question_id,
+                "answer_id": answer_id,
+                "question": question,
+                "answer": answer,
+                "original_concern": original_concern
+            })
+            
+            # OPTIMIZED: Extract and create Emotion + Topic nodes in batch operations
+            emotions = self._extract_emotions_from_text(answer)
+            topics = self._extract_topics_from_text(answer)
+            
+            # Batch create emotions and topics in single query if any exist
+            if emotions or topics:
+                self._create_emotions_and_topics_batch(answer_id, emotions, topics)
+            else:
+                self.logger.warning(f"No emotions/topics extracted from: {answer[:50]}...")
+            
+            # Refresh schema
+            self.graph.refresh_schema()
+            
+            # Q&A pair stored successfully
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error storing structured Q&A in KG: {e}")
+            return False
+    
+    def analyze_therapy_patterns(self, session_id: str, current_qa_pairs: list, user_id: str = "default_user"):
+        """Analyze therapy patterns using structured Knowledge Graph schema and create Pattern nodes"""
+        try:
+            # Query all user's therapy data using structured schema
+            pattern_query = """
+            MATCH (u:User {user_id: $user_id})-[:HAS_SESSION]->(s:Session)
+            MATCH (s)-[:ASKED]->(q:Question)-[:ANSWERED_BY]->(a:Answer)
+            OPTIONAL MATCH (a)-[:EXPRESSES]->(e:Emotion)
+            OPTIONAL MATCH (a)-[:RELATES_TO]->(t:Topic)
+            WITH s, q, a, 
+                 collect(DISTINCT e.type) as emotions,
+                 collect(DISTINCT e.intensity) as emotion_intensities,
+                 collect(DISTINCT t.label) as topics
+            RETURN s.session_id as session_id, 
+                   s.original_concern as original_concern,
+                   s.timestamp as session_timestamp,
+                   q.text as question, 
+                   q.timestamp as question_timestamp,
+                   a.text as answer,
+                   emotions,
+                   emotion_intensities,
+                   topics
+            ORDER BY s.timestamp, q.timestamp
+            """
+            
+            results = self.graph.query(pattern_query, {"user_id": user_id})
+            
+            if not results:
+                return ""
+            
+            # Build comprehensive analysis context
+            kg_context = "STRUCTURED THERAPY PATTERN ANALYSIS:\n\n"
+            
+            # Group by session
+            sessions = {}
+            all_emotions = set()
+            all_topics = set()
+            
+            for result in results:
+                sid = result['session_id']
+                if sid not in sessions:
+                    sessions[sid] = {
+                        'original_concern': result['original_concern'],
+                        'timestamp': result['session_timestamp'],
+                        'qa_pairs': []
+                    }
+                
+                sessions[sid]['qa_pairs'].append({
+                    'question': result['question'],
+                    'answer': result['answer'],
+                    'emotions': [e for e in result['emotions'] if e],
+                    'emotion_intensities': [i for i in result['emotion_intensities'] if i],
+                    'topics': [t for t in result['topics'] if t]
+                })
+                
+                # Collect all emotions and topics for pattern analysis
+                all_emotions.update([e for e in result['emotions'] if e])
+                all_topics.update([t for t in result['topics'] if t])
+            
+            # Add session analysis
+            for sid, session_data in sessions.items():
+                kg_context += f"SESSION {sid} ({session_data['timestamp']}):\n"
+                kg_context += f"Original Concern: {session_data['original_concern']}\n\n"
+                
+                for i, qa in enumerate(session_data['qa_pairs'], 1):
+                    kg_context += f"Q{i}: {qa['question']}\n"
+                    kg_context += f"A{i}: {qa['answer']}\n"
+                    if qa['emotions']:
+                        kg_context += f"Emotions: {', '.join(qa['emotions'])}\n"
+                    if qa['topics']:
+                        kg_context += f"Topics: {', '.join(qa['topics'])}\n"
+                    kg_context += "\n"
+                
+                kg_context += "---\n\n"
+            
+            # Add pattern summary
+            kg_context += f"CROSS-SESSION PATTERNS:\n"
+            kg_context += f"Recurring Emotions: {', '.join(all_emotions)}\n"
+            kg_context += f"Recurring Topics: {', '.join(all_topics)}\n\n"
+            
+            # Use LLM to identify patterns and create Pattern nodes if confidence is high
+            pattern_analysis = self._analyze_patterns_with_llm(kg_context, user_id)
+            
+            if pattern_analysis and pattern_analysis.get('confidence', 0) >= 0.85:
+                self._create_pattern_nodes(user_id, pattern_analysis, all_topics)
+            
+            return kg_context
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error analyzing therapy patterns: {e}")
+            return ""
+    
+    def _create_emotions_and_topics_batch(self, answer_id: str, emotions: list, topics: list):
+        """OPTIMIZED: Create all emotions and topics for an answer in a single batch query"""
+        try:
+            if not emotions and not topics:
+                return
+            
+            # Build dynamic query parts
+            emotion_creates = []
+            topic_creates = []
+            emotion_merges = []
+            topic_merges = []
+            
+            params = {"answer_id": answer_id}
+            
+            # Prepare emotion creation statements
+            for i, emotion in enumerate(emotions):
+                emotion_id = f"{answer_id}_emotion_{emotion['type']}"
+                emotion_var = f"e{i}"
+                
+                emotion_creates.append(f"MERGE ({emotion_var}:Emotion {{e_id: $emotion_id_{i}, type: $emotion_type_{i}, intensity: $emotion_intensity_{i}}})")
+                emotion_merges.append(f"MERGE (a)-[:EXPRESSES]->({emotion_var})")
+                
+                params[f"emotion_id_{i}"] = emotion_id
+                params[f"emotion_type_{i}"] = emotion['type']
+                params[f"emotion_intensity_{i}"] = emotion['intensity']
+            
+            # Prepare topic creation statements
+            for i, topic in enumerate(topics):
+                topic_id = f"topic_{topic['label'].lower().replace(' ', '_')}"
+                topic_var = f"t{i}"
+                
+                topic_creates.append(f"MERGE ({topic_var}:Topic {{t_id: $topic_id_{i}, label: $topic_label_{i}}})")
+                topic_merges.append(f"MERGE (a)-[:RELATES_TO]->({topic_var})")
+                
+                params[f"topic_id_{i}"] = topic_id
+                params[f"topic_label_{i}"] = topic['label']
+            
+            # Build complete batch query
+            batch_query = f"""
+            MATCH (a:Answer {{a_id: $answer_id}})
+            {chr(10).join(emotion_creates)}
+            {chr(10).join(topic_creates)}
+            {chr(10).join(emotion_merges)}
+            {chr(10).join(topic_merges)}
+            RETURN a
+            """
+            
+            # Execute batch query
+            self.graph.query(batch_query, params)
+            
+            # Quietly created emotions and topics
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error in batch emotion/topic creation: {e}")
+            # Fallback to individual creation if batch fails
+            self._create_emotions_and_topics_individual(answer_id, emotions, topics)
+    
+    def _create_emotions_and_topics_individual(self, answer_id: str, emotions: list, topics: list):
+        """Fallback: Create emotions and topics individually if batch fails"""
+        try:
+            # Create emotions individually
+            for emotion in emotions:
+                emotion_id = f"{answer_id}_emotion_{emotion['type']}"
+                emotion_query = """
+                MERGE (a:Answer {a_id: $answer_id})
+                MERGE (e:Emotion {e_id: $emotion_id, type: $emotion_type, intensity: $intensity})
+                MERGE (a)-[:EXPRESSES]->(e)
+                """
+                self.graph.query(emotion_query, {
+                    "answer_id": answer_id,
+                    "emotion_id": emotion_id,
+                    "emotion_type": emotion['type'],
+                    "intensity": emotion['intensity']
+                })
+            
+            # Create topics individually
+            for topic in topics:
+                topic_id = f"topic_{topic['label'].lower().replace(' ', '_')}"
+                topic_query = """
+                MERGE (a:Answer {a_id: $answer_id})
+                MERGE (t:Topic {t_id: $topic_id, label: $topic_label})
+                MERGE (a)-[:RELATES_TO]->(t)
+                """
+                self.graph.query(topic_query, {
+                    "answer_id": answer_id,
+                    "topic_id": topic_id,
+                    "topic_label": topic['label']
+                })
+            
+            # Fallback creation completed
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error in individual emotion/topic creation: {e}")
+    
+    def _extract_emotions_from_text(self, text: str) -> list:
+        """Extract emotions from text using LLM with robust fallback"""
+        try:
+            # First try keyword-based extraction (more reliable)
+            emotion_keywords = {
+                'anxiety': ['anxious', 'worried', 'nervous', 'stressed', 'overwhelmed', 'panic'],
+                'sadness': ['sad', 'depressed', 'down', 'upset', 'crying', 'tears'],
+                'anger': ['angry', 'mad', 'frustrated', 'irritated', 'furious', 'annoyed'],
+                'fear': ['scared', 'afraid', 'fearful', 'terrified', 'frightened'],
+                'confusion': ['confused', 'lost', 'unclear', 'puzzled', 'unsure'],
+                'stress': ['stressed', 'pressure', 'burden', 'overwhelmed'],
+                'tiredness': ['tired', 'exhausted', 'drained', 'fatigued'],
+                'hope': ['hope', 'optimistic', 'positive', 'better'],
+                'guilt': ['guilty', 'shame', 'regret', 'fault']
+            }
+            
+            detected_emotions = []
+            text_lower = text.lower()
+            
+            for emotion, keywords in emotion_keywords.items():
+                if any(keyword in text_lower for keyword in keywords):
+                    # Calculate intensity based on keyword strength
+                    intensity = 0.8 if any(strong in text_lower for strong in ['very', 'extremely', 'really']) else 0.6
+                    detected_emotions.append({"type": emotion, "intensity": intensity})
+            
+            # If no emotions detected, try LLM extraction
+            if not detected_emotions:
+                emotion_prompt = f"""
+                Analyze this text and extract emotions. Return ONLY a JSON list:
+                [
+                    {{"type": "anxiety", "intensity": 0.8}},
+                    {{"type": "sadness", "intensity": 0.6}}
+                ]
+                
+                Text: "{text}"
+                
+                Common emotions: anxiety, sadness, anger, fear, stress, confusion, tiredness, hope, guilt
+                """
+                
+                response = self.llm.invoke([HumanMessage(content=emotion_prompt)])
+                
+                try:
+                    import json
+                    emotions = json.loads(response.content.strip())
+                    if isinstance(emotions, list) and emotions:
+                        detected_emotions = emotions
+                except json.JSONDecodeError:
+                    pass
+            
+            # Ensure at least one emotion if text suggests emotional content
+            if not detected_emotions and len(text) > 10:
+                detected_emotions = [{"type": "neutral", "intensity": 0.5}]
+            
+            return detected_emotions
+                
+        except Exception as e:
+            self.logger.error(f"Error extracting emotions: {e}")
+            return [{"type": "neutral", "intensity": 0.5}]  # Default emotion
+    
+    def _extract_topics_from_text(self, text: str) -> list:
+        """Extract topics/themes from text using keyword matching with LLM fallback"""
+        try:
+            # First try keyword-based extraction (more reliable)
+            topic_keywords = {
+                'work stress': ['work', 'job', 'career', 'boss', 'colleague', 'office', 'deadline', 'project'],
+                'family issues': ['family', 'parents', 'siblings', 'mother', 'father', 'mom', 'dad'],
+                'relationships': ['relationship', 'partner', 'boyfriend', 'girlfriend', 'friend', 'dating'],
+                'health concerns': ['health', 'sick', 'tired', 'pain', 'medical', 'doctor', 'illness'],
+                'sleep problems': ['sleep', 'insomnia', 'tired', 'exhausted', 'rest', 'awake', 'sleepless'],
+                'academic pressure': ['school', 'study', 'exam', 'grade', 'university', 'college', 'student'],
+                'financial stress': ['money', 'financial', 'debt', 'bills', 'expensive', 'afford'],
+                'social anxiety': ['social', 'people', 'crowd', 'public', 'embarrassed', 'awkward'],
+                'self-esteem': ['confidence', 'self-worth', 'insecure', 'doubt', 'inadequate'],
+                'mental health': ['depression', 'anxiety', 'therapy', 'counseling', 'mental', 'emotional']
+            }
+            
+            detected_topics = []
+            text_lower = text.lower()
+            
+            for topic, keywords in topic_keywords.items():
+                if any(keyword in text_lower for keyword in keywords):
+                    detected_topics.append({"label": topic})
+            
+            # If no topics detected, try LLM extraction
+            if not detected_topics:
+                topic_prompt = f"""
+                Extract main topics from this text. Return ONLY a JSON list:
+                [
+                    {{"label": "work stress"}},
+                    {{"label": "sleep problems"}}
+                ]
+                
+                Text: "{text}"
+                
+                Common topics: work stress, family issues, relationships, health concerns, sleep problems, academic pressure, financial stress, social anxiety, self-esteem, mental health
+                """
+                
+                response = self.llm.invoke([HumanMessage(content=topic_prompt)])
+                
+                try:
+                    import json
+                    topics = json.loads(response.content.strip())
+                    if isinstance(topics, list) and topics:
+                        detected_topics = topics
+                except json.JSONDecodeError:
+                    pass
+            
+            # Ensure at least one topic if text is substantial
+            if not detected_topics and len(text) > 20:
+                detected_topics = [{"label": "general concerns"}]
+            
+            return detected_topics
+                
+        except Exception as e:
+            self.logger.error(f"Error extracting topics: {e}")
+            return [{"label": "general concerns"}]  # Default topic
+    
+    def _analyze_patterns_with_llm(self, kg_context: str, user_id: str) -> dict:
+        """Use LLM to analyze patterns and determine if a Pattern node should be created"""
+        try:
+            pattern_prompt = f"""
+            Analyze the following therapy session data and identify psychological patterns:
+            
+            {kg_context}
+            
+            Based on this data, determine if there's a clear psychological pattern that should be recorded.
+            
+            Return a JSON response in this format:
+            {{
+                "pattern_found": true/false,
+                "pattern_label": "specific pattern name",
+                "confidence": 0.0-1.0,
+                "description": "detailed description of the pattern",
+                "supporting_evidence": ["evidence1", "evidence2"]
+            }}
+            
+            Only return pattern_found=true if confidence >= 0.85 and you can identify a clear, recurring psychological pattern.
+            
+            Examples of patterns:
+            - "Academic perfectionism with anxiety"
+            - "Family conflict avoidance pattern"
+            - "Work-related stress and sleep disruption cycle"
+            - "Social anxiety with isolation behaviors"
+            """
+            
+            response = self.llm.invoke([HumanMessage(content=pattern_prompt)])
+            
+            try:
+                pattern_analysis = json.loads(response.content.strip())
+                return pattern_analysis
+            except json.JSONDecodeError:
+                return {"pattern_found": False, "confidence": 0.0}
+                
+        except Exception as e:
+            self.logger.error(f"Error analyzing patterns with LLM: {e}")
+            return {"pattern_found": False, "confidence": 0.0}
+    
+    def _create_pattern_nodes(self, user_id: str, pattern_analysis: dict, related_topics: set):
+        """Create Pattern nodes and relationships when high confidence patterns are found"""
+        try:
+            if not pattern_analysis.get('pattern_found', False):
+                return
+            
+            pattern_id = f"pattern_{pattern_analysis['pattern_label'].lower().replace(' ', '_')}"
+            timestamp = datetime.now().isoformat()
+            
+            # Create Pattern node
+            pattern_query = """
+            MERGE (u:User {user_id: $user_id})
+            MERGE (p:Pattern {
+                p_id: $pattern_id, 
+                label: $pattern_label, 
+                confidence: $confidence,
+                description: $description,
+                created_at: $timestamp
+            })
+            MERGE (u)-[:HAS_PATTERN]->(p)
+            RETURN p
+            """
+            
+            self.graph.query(pattern_query, {
+                "user_id": user_id,
+                "pattern_id": pattern_id,
+                "pattern_label": pattern_analysis['pattern_label'],
+                "confidence": pattern_analysis['confidence'],
+                "description": pattern_analysis.get('description', ''),
+                "timestamp": timestamp
+            })
+            
+            # Link related topics to the pattern
+            for topic_label in related_topics:
+                if topic_label:  # Skip empty topics
+                    topic_id = f"topic_{topic_label.lower().replace(' ', '_')}"
+                    topic_pattern_query = """
+                    MATCH (t:Topic {t_id: $topic_id})
+                    MATCH (p:Pattern {p_id: $pattern_id})
+                    MERGE (t)-[:PART_OF_PATTERN]->(p)
+                    """
+                    
+                    self.graph.query(topic_pattern_query, {
+                        "topic_id": topic_id,
+                        "pattern_id": pattern_id
+                    })
+            
+            self.logger.info(f"✅ Pattern node created: {pattern_analysis['pattern_label']} (confidence: {pattern_analysis['confidence']:.2f})")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error creating pattern nodes: {e}")
 
 def get_credentials_from_env():
     """Reads credentials exclusively from environment variables."""

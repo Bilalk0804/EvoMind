@@ -53,16 +53,13 @@ def build_graph():
     """
     graph_builder = StateGraph(State)
 
-    # Add all nodes
-    graph_builder.add_node("classify_message", classify_message)  # LLM1: Generate clarifying questions
-    graph_builder.add_node("ask_more_questions", ask_more_questions)  # Ask for more info
+    # Add all nodes for psychiatrist flow
+    graph_builder.add_node("classify_message", classify_message)  # LLM1: Ask first question
+    graph_builder.add_node("ask_more_questions", ask_more_questions)  # LLM1: Ask follow-up questions
     graph_builder.add_node("collect_qa_pairs", collect_qa_pairs)  # Collect user responses
     graph_builder.add_node("kg_ingest", kg_ingest)  # Store Q&A pairs in KG
-    graph_builder.add_node("extract_root_problem", extract_root_problem)  # LLM2: Extract root problem
-    graph_builder.add_node("check_proximity", check_proximity)  # Check proximity
-    graph_builder.add_node("should_store_qa", should_store_qa)  # Determine storage decision
-    graph_builder.add_node("generate_comprehensive_response", generate_response_with_insights)  # High proximity response
-    graph_builder.add_node("generate_simple_response", generate_simple_response)  # Low proximity response
+    graph_builder.add_node("extract_root_problem", extract_root_problem)  # LLM2: Analyze for root problem
+    graph_builder.add_node("generate_comprehensive_response", generate_response_with_insights)  # Final diagnosis & advice
 
     # Define the flow
     graph_builder.add_edge(START, "classify_message")
@@ -91,39 +88,22 @@ def build_graph():
     graph_builder.add_edge("kg_ingest", "extract_root_problem")
 
     def problem_discovery_router(state: State):
-        """Router after LLM2 problem extraction - Decision 1"""
+        """Router after LLM2 psychological analysis - Decision 1"""
         problem_discovered = state.get("problem_discovered", False)
         confidence = state.get("confidence", 0.0)
         
-        if not problem_discovered or confidence < 0.7:
-            return "ask_more_questions"  # LLM2 asks for more info → LLM1 generates more questions
+        # LLM2 must be 85%+ confident to proceed to diagnosis
+        if not problem_discovered or confidence < 0.85:
+            return "ask_more_questions"  # Continue asking questions until confident
         else:
-            return "check_proximity"  # Problem discovered, LLM2 checks proximity
+            return "generate_comprehensive_response"  # Give final diagnosis and advice
 
     graph_builder.add_conditional_edges("extract_root_problem", problem_discovery_router, {
         "ask_more_questions": "ask_more_questions",
-        "check_proximity": "check_proximity"
+        "generate_comprehensive_response": "generate_comprehensive_response"
     })
 
-    # After checking proximity, determine storage decision
-    graph_builder.add_edge("check_proximity", "should_store_qa")
-
-    def response_router(state: State):
-        """Router for response generation - Decision 2: Proximity check"""
-        proximity_level = state.get("proximity_level", "low")
-        
-        if proximity_level == "high":
-            return "generate_comprehensive_response"  # High proximity: LLM2 sends insights to LLM1 → full storage
-        else:
-            return "generate_simple_response"  # Low proximity: LLM1 generates response → no storage
-
-    graph_builder.add_conditional_edges("should_store_qa", response_router, {
-        "generate_comprehensive_response": "generate_comprehensive_response",
-        "generate_simple_response": "generate_simple_response"
-    })
-
-    # Both response types lead to END
+    # Final diagnosis leads to END
     graph_builder.add_edge("generate_comprehensive_response", END)
-    graph_builder.add_edge("generate_simple_response", END)
 
     return graph_builder.compile()

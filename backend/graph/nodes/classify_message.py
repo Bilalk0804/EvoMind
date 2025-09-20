@@ -2,34 +2,45 @@ from models.llm import llm
 from pydantic import BaseModel, Field
 from typing import Any, List
 from vector_db.vector_manager import get_vector_db_manager
+from langchain_core.messages import AIMessage
 
-class ClarifyingQuestions(BaseModel):
-    questions: List[str] = Field(
+class CounselorQuestion(BaseModel):
+    question: str = Field(
         ...,
-        description="List of exactly 5 clarifying questions to better understand the user's needs"
+        description="A single empathetic counselor-style question to understand the user's emotional state"
     )
     needs_more_info: bool = Field(
-        ...,
-        description="Whether the user's message needs more clarification"
-    )
-    current_question_index: int = Field(
-        default=0,
-        description="Index of the current question being asked (0-4)"
+        default=True,
+        description="Whether more information is needed (always True until root problem found)"
     )
 
 def classify_message(state: dict[str, Any]) -> dict[str, Any]:
     """
-    LLM1: Analyzes the user prompt and generates clarifying questions.
-    Also queries Vector Database for similar Q&A pairs.
+    LLM1: Acts as a psychiatrist/counselor, asking ONE empathetic question at a time.
+    This is the initial analysis of the user's message.
     """
     last_message = state["messages"][-1].content
     
     # Query vector database for similar Q&A pairs
-    vector_db = get_vector_db_manager()
-    similar_pairs = vector_db.search_similar_qa(last_message, k=3)
+    try:
+        vector_db = get_vector_db_manager()
+        similar_pairs = vector_db.search_similar_qa(last_message, k=3)
+    except Exception as e:
+        print(f"Vector DB error: {e}")
+        similar_pairs = []
     
-    # Generate clarifying questions using LLM1
-    questions_llm = llm.with_structured_output(ClarifyingQuestions)
+    # Get conversation history for context
+    qa_pairs = state.get("qa_pairs", [])
+    conversation_context = ""
+    
+    if qa_pairs:
+        conversation_context = "\n\nPrevious conversation in this session:\n"
+        for i, qa in enumerate(qa_pairs, 1):
+            conversation_context += f"Q{i}: {qa.get('question', '')}\n"
+            conversation_context += f"A{i}: {qa.get('answer', '')}\n\n"
+    
+    # Generate ONE empathetic question using LLM1
+    counselor_llm = llm.with_structured_output(CounselorQuestion)
     
     # Build context from similar Q&A pairs
     context = ""
@@ -38,50 +49,52 @@ def classify_message(state: dict[str, Any]) -> dict[str, Any]:
         for i, pair in enumerate(similar_pairs, 1):
             context += f"{i}. Q: {pair['question']}\n   A: {pair['answer'][:100]}...\n"
     
-    result = questions_llm.invoke([
+    result = counselor_llm.invoke([
         {    
             "role":"system",
             "content":f"""
-                You are LLM1, a counselor-style AI responsible for analyzing user prompts and generating contextual clarifying questions.
+                You are LLM1, a professional psychiatrist/counselor AI. Your role is to ask ONE empathetic question at a time to understand the user's emotional and psychological state.
                 
-                Your task:
-                1. Analyze the user's message to understand what they're asking
-                2. Generate exactly 5 specific, helpful clarifying questions that build on each other
-                3. Ensure questions flow logically and create a conversation-like experience
-                4. Determine if more information is needed
+                IMPORTANT RULES:
+                1. Ask ONLY ONE question per response
+                2. Be empathetic, warm, and professional like a real therapist
+                3. Focus on emotions, feelings, and psychological aspects
+                4. Build on previous answers to go deeper
+                5. Try to understand the ROOT CAUSE of their emotional state
+                6. Use therapeutic questioning techniques
                 
-                Guidelines for counselor-style questions:
-                - Start with broad understanding, then get more specific
-                - Each question should naturally lead to the next
-                - Focus on emotions, context, and personal experience
-                - Ask about feelings, situations, attempts made, and desired outcomes
-                - Make questions empathetic and supportive
-                - Consider the context from similar conversations if provided
+                Your questioning approach:
+                - Start with understanding their current emotional state
+                - Explore when/how these feelings started
+                - Understand triggers and patterns
+                - Explore relationships and social context
+                - Identify coping mechanisms they've tried
+                - Look for underlying beliefs or traumas
                 
-                Example flow for relationship/emotional topics:
-                1. Understanding feelings and duration
-                2. Context and circumstances 
-                3. Current situation and interactions
-                4. Previous attempts or coping strategies
-                5. Desired outcome or specific help needed
+                Current conversation context:{conversation_context}
                 
-                Context from similar conversations:{context}
+                Similar past conversations:{context}
+                
+                Ask ONE thoughtful, empathetic question that will help uncover the psychological root of their issue.
             """
         },
         {"role":"user","content":last_message}
     ])
     
+    # Add the question to messages so it gets displayed
+    question_message = AIMessage(content=result.question)
+    
     return {
-        "messages": state["messages"], 
-        "clarifying_questions": result.questions,
-        "current_question_index": 0,
+        "messages": state["messages"] + [question_message], 
+        "current_question": result.question,
         "conversation_memory": {
             "original_question": last_message,
             "context_summary": f"User is asking about: {last_message}",
             "session_start": True
         },
-        "answered_questions": [],
-        "needs_more_info": result.needs_more_info,
+        "qa_pairs": qa_pairs,
+        "needs_more_info": True,  # Always True until LLM2 finds root problem
         "similar_qa_pairs": similar_pairs,
-        "original_question": last_message
+        "original_question": last_message,
+        "response_type": "asking_for_more_info"
     }
