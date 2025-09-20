@@ -1,0 +1,206 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Professional AI Chat Design System */
+
+@layer base {
+  :root {
+    /* Light theme colors */
+    --background: 0 0% 100%;
+    --foreground: 224 71.4% 4.1%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 224 71.4% 4.1%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 71.4% 4.1%;
+
+    --primary: 220.9 39.3% 11%;
+    --primary-foreground: 210 20% 98%;
+
+    --secondary: 220 14.3% 95.9%;
+    --secondary-foreground: 220.9 39.3% 11%;
+
+    --muted: 220 14.3% 95.9%;
+    --muted-foreground: 220 8.9% 46.1%;
+
+    --accent: 220 14.3% 95.9%;
+    --accent-foreground: 220.9 39.3% 11%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 20% 98%;
+
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 224 71.4% 4.1%;
+
+    --radius: 0.75rem;
+
+    /* Chat-specific colors */
+    --chat-background: 0 0% 98%;
+    --chat-user-bubble: 217.2 91.2% 59.8%;
+    --chat-user-text: 210 20% 98%;
+    --chat-ai-bubble: 0 0% 100%;
+    --chat-ai-text: 224 71.4% 4.1%;
+    --chat-input-bg: 0 0% 100%;
+    --chat-border: 220 13% 91%;
+
+    /* Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(217.2 91.2% 59.8%), hsl(221.2 83.2% 53.3%));
+    --gradient-background: linear-gradient(180deg, hsl(0 0% 100%) 0%, hsl(220 14.3% 98%) 100%);
+
+    /* Shadows */
+    --shadow-chat: 0 1px 3px 0 hsl(0 0% 0% / 0.1), 0 1px 2px -1px hsl(0 0% 0% / 0.1);
+    --shadow-message: 0 1px 2px 0 hsl(0 0% 0% / 0.05);
+    --shadow-input: 0 0 0 1px hsl(220 13% 91%), 0 2px 4px 0 hsl(0 0% 0% / 0.02);
+
+    /* Transitions */
+    --transition-smooth: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-spring: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+
+    --sidebar-background: 0 0% 98%;
+
+    --sidebar-foreground: 240 5.3% 26.1%;
+
+    --sidebar-primary: 240 5.9% 10%;
+
+    --sidebar-primary-foreground: 0 0% 98%;
+
+    --sidebar-accent: 240 4.8% 95.9%;
+
+    --sidebar-accent-foreground: 240 5.9% 10%;
+
+    --sidebar-border: 220 13% 91%;
+
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    /* Dark theme colors */
+    --background: 224 71.4% 4.1%;
+    --foreground: 210 20% 98%;
+
+    --card: 224 71.4% 4.1%;
+    --card-foreground: 210 20% 98%;
+
+    --popover: 224 71.4% 4.1%;
+    --popover-foreground: 210 20% 98%;
+
+    --primary: 210 20% 98%;
+    --primary-foreground: 220.9 39.3% 11%;
+
+    --secondary: 215 27.9% 16.9%;
+    --secondary-foreground: 210 20% 98%;
+
+    --muted: 215 27.9% 16.9%;
+    --muted-foreground: 217.9 10.6% 64.9%;
+
+    --accent: 215 27.9% 16.9%;
+    --accent-foreground: 210 20% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 20% 98%;
+
+    --border: 215 27.9% 16.9%;
+    --input: 215 27.9% 16.9%;
+    --ring: 216 12.2% 83.9%;
+
+    --radius: 0.75rem;
+
+    /* Dark chat-specific colors */
+    --chat-background: 224 71.4% 4.1%;
+    --chat-user-bubble: 217.2 91.2% 59.8%;
+    --chat-user-text: 210 20% 98%;
+    --chat-ai-bubble: 215 27.9% 16.9%;
+    --chat-ai-text: 210 20% 98%;
+    --chat-input-bg: 215 27.9% 16.9%;
+    --chat-border: 215 27.9% 16.9%;
+
+    /* Dark gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(217.2 91.2% 59.8%), hsl(221.2 83.2% 53.3%));
+    --gradient-background: linear-gradient(180deg, hsl(224 71.4% 4.1%) 0%, hsl(215 27.9% 16.9%) 100%);
+
+    /* Dark shadows */
+    --shadow-chat: 0 1px 3px 0 hsl(0 0% 0% / 0.3), 0 1px 2px -1px hsl(0 0% 0% / 0.3);
+    --shadow-message: 0 1px 2px 0 hsl(0 0% 0% / 0.2);
+    --shadow-input: 0 0 0 1px hsl(215 27.9% 16.9%), 0 2px 4px 0 hsl(0 0% 0% / 0.1);
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+@layer components {
+  .chat-container {
+    background: var(--gradient-background);
+  }
+  
+  .chat-message-user {
+    background: var(--gradient-primary);
+    color: hsl(var(--chat-user-text));
+    box-shadow: var(--shadow-message);
+  }
+  
+  .chat-message-ai {
+    background: hsl(var(--chat-ai-bubble));
+    color: hsl(var(--chat-ai-text));
+    box-shadow: var(--shadow-message);
+    border: 1px solid hsl(var(--chat-border));
+  }
+  
+  .chat-input-container {
+    background: hsl(var(--chat-input-bg));
+    box-shadow: var(--shadow-input);
+    border: 1px solid hsl(var(--chat-border));
+  }
+  
+  .transition-smooth {
+    transition: var(--transition-smooth);
+  }
+  
+  .transition-spring {
+    transition: var(--transition-spring);
+  }
+}
+
+/* Custom scrollbar styles */
+.thin-scrollbar::-webkit-scrollbar {
+  width: 8px; /* Adjust as needed */
+}
+
+.thin-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(156, 163, 175, 0.5); /* gray-400 with opacity */
+  border-radius: 10px;
+  border: 2px solid transparent; /* Creates a thin border effect */
+  background-clip: padding-box;
+}
+
+.thin-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(156, 163, 175, 0.7); /* Darker on hover */
+}
+
+/* For Firefox */
+.thin-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(156, 163, 175, 0.5) transparent;
+}
