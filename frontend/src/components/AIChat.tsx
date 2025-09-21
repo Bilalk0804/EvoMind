@@ -12,8 +12,9 @@ import {
   MoreHorizontal,
   Bot,
   User,
-  AudioLines // Import AudioLines icon
+  AudioLines
 } from "lucide-react";
+import { ChatWebSocketService, ApiService, generateSessionId, formatTimestamp } from "@/services/api";
 import { NavLink } from "react-router-dom";
 import { useTheme } from "next-themes";
 import {
@@ -139,7 +140,7 @@ function AppSidebar() {
     {
       id: "4",
       title: "Database Design",
-      lastMessage: "What's the best approach for user authentication?  ",
+      lastMessage: "What's the best approach for user authentication?",
       timestamp: "2 days ago",
     },
   ];
@@ -166,7 +167,7 @@ function AppSidebar() {
           <Button 
             onClick={handleNewChat}
             className={cn(
-              "w-full gap-2 transition-smooth items-center hover:scale-[0.98] ",isCollapsed?"h-9 w-9":""
+              "w-full gap-2 transition-smooth items-center hover:scale-[0.98]", isCollapsed ? "h-9 w-9" : ""
             )}
             variant="outline"
           >
@@ -200,13 +201,13 @@ function AppSidebar() {
                         <MessageSquare className="h-4 w-4 mt-0.5 flex-shrink-0" />
                         {!isCollapsed && (
                           <div className="flex-1 min-w-0">
-                            <p className={cn("text-sm font-medium truncate",chat.isActive && "text-white")}>
+                            <p className={cn("text-sm font-medium truncate", chat.isActive && "text-white")}>
                               {chat.title}
                             </p>
-                            <p className={cn("text-xs text-muted-foreground truncate",chat.isActive && "text-white")}>
+                            <p className={cn("text-xs text-muted-foreground truncate", chat.isActive && "text-white")}>
                               {chat.lastMessage}
                             </p>
-                            <p className={cn("text-xs text-muted-foreground mt-1",chat.isActive && "text-white")}>
+                            <p className={cn("text-xs text-muted-foreground mt-1", chat.isActive && "text-white")}>
                               {chat.timestamp}
                             </p>
                           </div>
@@ -280,8 +281,11 @@ function ChatInterface() {
   ]);
   const [inputValue, setInputValue] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(false);
+  const [isConnected, setIsConnected] = React.useState(false);
+  const [sessionId] = React.useState(() => generateSessionId());
   const scrollAreaRef = React.useRef<HTMLDivElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const wsService = React.useRef<ChatWebSocketService | null>(null);
 
   const scrollToBottom = () => {
     if (scrollAreaRef.current) {
@@ -296,6 +300,51 @@ function ChatInterface() {
     scrollToBottom();
   }, [messages]);
 
+  // Initialize WebSocket connection
+  React.useEffect(() => {
+    const initializeWebSocket = async () => {
+      try {
+        // Check backend health first
+        await ApiService.healthCheck();
+        
+        // Initialize WebSocket
+        wsService.current = new ChatWebSocketService(sessionId);
+        
+        // Set up message handler
+        wsService.current.onMessage((response) => {
+          const aiMessage: Message = {
+            id: Date.now().toString(),
+            text: response.response,
+            isUser: false,
+            timestamp: formatTimestamp(response.timestamp)
+          };
+          setMessages(prev => [...prev, aiMessage]);
+          setIsLoading(false);
+        });
+
+        // Set up connection handler
+        wsService.current.onConnectionChange((connected) => {
+          setIsConnected(connected);
+        });
+
+        // Connect
+        await wsService.current.connect();
+      } catch (error) {
+        console.error('Failed to initialize WebSocket:', error);
+        setIsConnected(false);
+      }
+    };
+
+    initializeWebSocket();
+
+    // Cleanup on unmount
+    return () => {
+      if (wsService.current) {
+        wsService.current.disconnect();
+      }
+    };
+  }, [sessionId]);
+
   const handleSendMessage = async () => {
     if (!inputValue.trim() || isLoading) return;
 
@@ -307,21 +356,36 @@ function ChatInterface() {
     };
 
     setMessages(prev => [...prev, userMessage]);
+    const messageText = inputValue;
     setInputValue("");
     setIsLoading(true);
 
-    // Simulate AI response
-    setTimeout(() => {
-      const aiMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        text: "I understand your message. This is a demo AI chat interface. In a real application, this would be connected to an AI service to provide intelligent responses.",
-        isUser: false,
-        timestamp: new Date().toLocaleTimeString()
-      };
-      setMessages(prev => [...prev, aiMessage]);
-      setIsLoading(false);
-    }, 1000);
+    // Send message via WebSocket
+    if (wsService.current && isConnected) {
+      wsService.current.sendMessage(messageText);
+    } else {
+      // Fallback to REST API if WebSocket fails
+      try {
+        const response = await ApiService.sendChatMessage({
+          message: messageText,
+          session_id: sessionId
+        });
+        
+        const aiMessage: Message = {
+          id: Date.now().toString(),
+          text: response.response,
+          isUser: false,
+          timestamp: formatTimestamp(response.timestamp)
+        };
+        setMessages(prev => [...prev, aiMessage]);
+        setIsLoading(false);
+      } catch (error) {
+        console.error('Failed to send message:', error);
+        setIsLoading(false);
+      }
+    }
   };
+
   const handleVoiceInput = () => {
     console.log("Voice input activated!");
     // Implement voice input logic here
@@ -351,14 +415,16 @@ function ChatInterface() {
       <header className="flex items-center justify-between p-4 border-b border-border bg-card/50 backdrop-blur-sm">
         <div className="flex items-center gap-2">
           <div className={cn("flex pb-0 justify-center")}>
-          <SidebarTrigger size="lg" className={cn("w-full bg-background/80 backdrop-blur-sm border border-border shadow-sm hover:bg-accent transition-smooth h-9 w-9")} />
-        </div>
+            <SidebarTrigger size="lg" className={cn("w-full bg-background/80 backdrop-blur-sm border border-border shadow-sm hover:bg-accent transition-smooth h-9 w-9")} />
+          </div>
           <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
             <span className="text-primary-foreground font-bold text-sm">AI</span>
           </div>
           <div>
             <h1 className="font-semibold text-lg">AI Chat Assistant</h1>
-            <p className="text-xs text-muted-foreground">Professional AI Chat Interface</p>
+            <p className="text-xs text-muted-foreground">
+              {isConnected ? "Connected to backend" : "Connecting..."}
+            </p>
           </div>
         </div>
         <ThemeToggle />
@@ -414,10 +480,9 @@ function ChatInterface() {
               disabled={isLoading}
             />
             
-
             <Button
               onClick={inputValue.trim() ? handleSendMessage : handleVoiceInput}
-              disabled={isLoading}
+              disabled={isLoading || (!isConnected && !inputValue.trim())}
               size="icon"
               className="transition-spring hover:scale-105 disabled:hover:scale-100"
             >

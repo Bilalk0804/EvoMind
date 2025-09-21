@@ -8,8 +8,8 @@ try:
 except ImportError as e:
     raise RuntimeError("mcp not installed. Add 'mcp' to requirements.")
 
-from .tools.notion_tools import NotionClientWrapper
-from .tools.planning_tools import plan_tasks_tool, get_schedule_tool, add_event_tool
+from tools.notion_tools import NotionClientWrapper
+from tools.planning_tools import plan_tasks_tool, get_schedule_tool, add_event_tool
 
 
 def create_server() -> FastMCP:

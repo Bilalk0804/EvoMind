@@ -1,17 +1,232 @@
 from langchain_core.messages import HumanMessage, AIMessage
 import sys
 import threading
+import re
+import json
 import os
-import asyncio
 import threading
 import time
 from datetime import datetime
-from typing import List
-from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass, field
 from langchain_groq import ChatGroq
+from pydantic import BaseModel, Field
+
+def execute_mcp_tools(response_text: str, state) -> str:
+    """Execute MCP tools when AI requests them and return updated response"""
+    try:
+        # Import MCP tools
+        from local_mcp.tools.notion_tools import NotionClientWrapper
+        from local_mcp.tools.planning_tools import plan_tasks_tool, add_event_tool
+        from datetime import datetime, timedelta
+        from dotenv import load_dotenv
+        
+        # Load environment variables
+        load_dotenv()
+        notion_token = os.getenv("NOTION_API_KEY")
+        default_db = os.getenv("NOTION_DEFAULT_DATABASE_ID")
+        
+        # Ensure all required attributes exist (backward compatibility)
+        state.ensure_attributes()
+        
+        updated_response = response_text
+        
+        # Check for ROOT CAUSE ACTION MODE triggers
+        root_cause_triggers = [
+            "root cause", "core issue", "underlying pattern", "learned very young", 
+            "that little child", "stemming from", "childhood", "family patterns",
+            "past experience", "early experience"
+        ]
+        
+        has_root_cause = any(trigger in response_text.lower() for trigger in root_cause_triggers)
+        conversation_length_trigger = len(state.qa_pairs) >= 6  # After 7-8 exchanges
+        
+        # Only trigger action mode if not already triggered and conditions are met
+        if (has_root_cause or conversation_length_trigger) and not state.action_mode_triggered and "Now that we've identified" not in response_text:
+            # AUTO-TRIGGER ACTION MODE when root cause is identified
+            action_text = "\n\nNow that we've identified the core issue, let me help you take action:\n"
+            
+            # Create relevant task based on the root cause context
+            if notion_token:
+                notion = NotionClientWrapper(auth_token=notion_token, default_database_id=default_db)
+                
+                # Determine task based on context
+                if "boundary" in response_text.lower() or "say no" in response_text.lower():
+                    task_title = "Practice Boundary Setting"
+                    task_content = "Start with small, low-stakes situations to practice saying no. Build confidence gradually."
+                elif "childhood" in response_text.lower() or "parent" in response_text.lower():
+                    task_title = "Inner Child Work"
+                    task_content = "Reflect on childhood patterns and how they show up in current situations."
+                elif "perfectionism" in response_text.lower():
+                    task_title = "Challenge Perfectionist Thoughts"
+                    task_content = "Notice perfectionist thoughts and practice self-compassion."
+                else:
+                    task_title = "Self-Awareness Practice"
+                    task_content = "Daily reflection on patterns identified in our conversation."
+                
+                # Create task in temporary storage (no database needed)
+                task_id = f"task_{len(state.temp_tasks) + 1}"
+                temp_task = {
+                    "id": task_id,
+                    "title": task_title,
+                    "content": task_content,
+                    "created": datetime.now().isoformat(),
+                    "status": "pending"
+                }
+                state.temp_tasks.append(temp_task)
+                
+                # Schedule follow-up in temporary storage
+                follow_up_date = datetime.now() + timedelta(days=7)
+                event_id = f"event_{len(state.temp_events) + 1}"
+                temp_event = {
+                    "id": event_id,
+                    "title": "Follow-up Session - Check Progress",
+                    "start": follow_up_date.isoformat(),
+                    "end": (follow_up_date + timedelta(hours=1)).isoformat(),
+                    "description": f"Review progress on {task_title} and continue therapeutic work",
+                    "created": datetime.now().isoformat()
+                }
+                state.temp_events.append(temp_event)
+                
+                # Display created items
+                action_text += f"✅ Created task: '{task_title}'\n"
+                action_text += f"✅ Scheduled follow-up session for {follow_up_date.strftime('%B %d')}\n\n"
+                
+                # Show task details
+                action_text += "📋 **Your New Task:**\n"
+                action_text += f"• **{task_title}**\n"
+                action_text += f"• {task_content}\n\n"
+                
+                action_text += "📅 **Upcoming Session:**\n"
+                action_text += f"• Follow-up on {follow_up_date.strftime('%B %d at %I:%M %p')}\n"
+                action_text += f"• Focus: Review progress on {task_title.lower()}\n\n"
+                
+                action_text += "💡 **Note:** These items are stored temporarily in this session. "
+                
+                # Try Notion if configured, but don't fail if not
+                if notion_token and default_db and default_db != "YOUR_DATABASE_ID_HERE":
+                    try:
+                        notion = NotionClientWrapper(auth_token=notion_token, default_database_id=default_db)
+                        if notion.enabled:
+                            notion_result = notion.create_page_tool(title=task_title, content=task_content)
+                            if notion_result.get("status") == "created":
+                                action_text += "Also saved to your Notion workspace! 🎉"
+                            else:
+                                action_text += "Notion sync failed, but task is saved in session."
+                        else:
+                            action_text += "Configure Notion database to sync permanently."
+                    except Exception as e:
+                        action_text += "Configure Notion database to sync permanently."
+                else:
+                    action_text += "Configure Notion database to sync permanently."
+                
+                action_text += "\n\nTake your time with these steps. Real change happens gradually. 💙"
+                updated_response += action_text
+                # Mark that action mode has been triggered to prevent repetition
+                state.action_mode_triggered = True
+        
+        # Handle user responses after action mode
+        user_confirmation_phrases = [
+            "yes", "ok", "okay", "sure", "yes create", "yes please", "go ahead", 
+            "create the tasks", "create them", "do it", "proceed", "fine"
+        ]
+        
+        user_modification_phrases = [
+            "modify", "change", "different", "adjust", "update", "edit", "revise",
+            "i want to change", "can we modify", "let's adjust", "different tasks"
+        ]
+        
+        user_continue_phrases = [
+            "talk more", "discuss more", "continue", "explore further", "tell me more",
+            "can we discuss", "i want to talk", "let's continue", "more questions"
+        ]
+        
+        user_end_phrases = [
+            "i'm done", "we're done", "that's enough", "i think we're finished",
+            "end conversation", "goodbye", "thanks", "thank you"
+        ]
+        
+        # Check if user wants to modify tasks
+        if any(phrase in response_text.lower() for phrase in user_modification_phrases) and state.action_mode_triggered:
+            updated_response = "Of course! I'd be happy to help you modify those tasks. What changes would you like to make? We can adjust the tasks, add new ones, or take a different approach entirely. What feels right for you?"
+            # Reset action mode to allow new modifications
+            state.reset_action_mode()
+        
+        # Check if user wants to continue conversation
+        elif any(phrase in response_text.lower() for phrase in user_continue_phrases) and state.action_mode_triggered:
+            updated_response = "Absolutely! I'm here to listen and help you explore this further. What would you like to discuss? Whether it's about the tasks we created, the patterns we discovered, or something else entirely - I'm ready to dive deeper with you."
+            # Keep action mode triggered but allow normal conversation
+        
+        # Check if user wants to end conversation
+        elif any(phrase in response_text.lower() for phrase in user_end_phrases):
+            updated_response = "I'm really glad we could work through this together. You've shown such courage in exploring these patterns and taking steps toward change. Remember, this journey takes time and you're already making important progress. Take care of yourself, and know that I'm here whenever you need to talk. You're not alone in this. 💙"
+        
+        # Check if user is confirming task creation
+        elif any(phrase in response_text.lower() for phrase in user_confirmation_phrases) and state.action_mode_triggered:
+            # User confirmed, actually create the tasks
+            if notion_token and state.temp_tasks:
+                notion = NotionClientWrapper(auth_token=notion_token, default_database_id=default_db)
+                created_tasks = []
+                for task in state.temp_tasks:
+                    if task.get("status") == "pending":
+                        result = notion.create_page_tool(title=task["title"], content=task["content"])
+                        if result.get("status") == "created":
+                            task["status"] = "created"
+                            task["notion_id"] = result.get("page_id")
+                            created_tasks.append(task["title"])
+                
+                if created_tasks:
+                    updated_response = f"✅ Perfect! I've created {len(created_tasks)} tasks in your Notion workspace:\n"
+                    for task_title in created_tasks:
+                        updated_response += f"• {task_title}\n"
+                    updated_response += "\nYou can find them in your Notion database. How are you feeling about taking these first steps?"
+                else:
+                    updated_response = "I tried to create the tasks but encountered an issue. Let me know if you'd like to try a different approach."
+            else:
+                updated_response = "I'd be happy to create those tasks, but I need to set up the Notion connection first. For now, here are the tasks we discussed:\n"
+                for task in state.temp_tasks:
+                    updated_response += f"• {task['title']}: {task['content']}\n"
+                updated_response += "\nHow does this plan feel to you?"
+        
+        # Handle explicit MCP tool calls
+        elif "create_notion_task(" in response_text:
+            if notion_token:
+                notion = NotionClientWrapper(auth_token=notion_token, default_database_id=default_db)
+                title = "Task from AI Chat"
+                content = "Task created during conversation"
+                result = notion.create_page_tool(title=title, content=content)
+                if result.get("status") == "created":
+                    updated_response = response_text.replace("create_notion_task(", "✅ Created task in Notion! ")
+                else:
+                    updated_response = response_text.replace("create_notion_task(", "❌ Failed to create task: ")
+            else:
+                updated_response = response_text.replace("create_notion_task(", "❌ Notion not configured: ")
+        
+        elif "plan_tasks(" in response_text:
+            goal = "Goal from AI conversation"
+            result = plan_tasks_tool(goal=goal, max_steps=5)
+            updated_response = response_text.replace("plan_tasks(", f"✅ Created plan with {len(result.get('tasks', []))} steps: ")
+        
+        elif "add_event(" in response_text:
+            now = datetime.now()
+            result = add_event_tool(
+                title="Event from AI Chat",
+                start=now.isoformat(),
+                end=(now + timedelta(hours=1)).isoformat(),
+                description="Event created during conversation"
+            )
+            updated_response = response_text.replace("add_event(", "✅ Added event to schedule: ")
+        
+        return updated_response
+        
+    except Exception as e:
+        print(f"❌ Error executing MCP tools: {e}")
+        return response_text
+
 from dotenv import load_dotenv
 from KG.kg_builder import RobustKnowledgeGraphBuilder
 from langchain_core.documents import Document
+import shutil
 
 class CounselorQuestion(BaseModel):
     question: str = Field(..., description="One empathetic counselor question")
@@ -35,8 +250,26 @@ class AsyncState:
         self.kg_builder = None
         self.session_id = None
         self.llm2_insights = None  # Store LLM2's analysis for LLM1 to use
+        self.action_mode_triggered = False  # Track if action mode has been triggered
+        self.temp_tasks = []  # Temporary tasks for Notion integration
+        self.temp_events = []  # Temporary events for scheduling
+    
+    def ensure_attributes(self):
+        """Ensure all required attributes exist (for backward compatibility)"""
+        if not hasattr(self, 'action_mode_triggered'):
+            self.action_mode_triggered = False
+        if not hasattr(self, 'temp_tasks'):
+            self.temp_tasks = []
+        if not hasattr(self, 'temp_events'):
+            self.temp_events = []
+    
+    def reset_action_mode(self):
+        """Reset action mode to allow new task creation"""
+        self.action_mode_triggered = False
+        self.temp_tasks = []
+        self.temp_events = []
 
-def llm2_background_worker(state: AsyncState):
+def llm2_background_worker(state: AsyncState, llm=None):
     """LLM2 stores Q&A in KG instantly and analyzes ENTIRE KG for patterns"""
     processed_qa_pairs = set()  # Track which Q&A pairs have been stored
     
@@ -61,7 +294,7 @@ def llm2_background_worker(state: AsyncState):
             answered_pairs = len([qa for qa in state.qa_pairs if qa.get('answer')])
             if newly_stored and answered_pairs >= 2:
                 state.llm2_analyzing = True
-                analyze_entire_kg_for_patterns(state)
+                analyze_entire_kg_for_patterns(state, llm)
                 state.llm2_analyzing = False
             
             time.sleep(1)  # Check every second
@@ -92,7 +325,7 @@ def store_single_qa_in_kg(state: AsyncState, qa_pair: dict, qa_number: int):
     except Exception as e:
         print(f"❌ Error storing Q&A in KG: {e}")
 
-def analyze_entire_kg_for_patterns(state: AsyncState):
+def analyze_entire_kg_for_patterns(state: AsyncState, llm=None):
     """LLM2 analyzes ENTIRE KG to find psychological patterns - ONLY after sufficient context is gathered"""
     if not state.kg_builder:
         return
@@ -236,7 +469,9 @@ def clear_vector_database():
     except Exception as e:
         print(f"❌ Error clearing Vector Database: {e}")
 
-def ask_counselor_question(state: AsyncState, user_input: str = None) -> str:
+def ask_counselor_question(state: AsyncState, user_input: str = None, llm=None) -> str:
+    # Ensure all required attributes exist (backward compatibility)
+    state.ensure_attributes()
     """LLM1 asks next question quickly, building on previous conversation"""
     
     # If this is a follow-up question, add the user's answer to the last Q&A pair
@@ -274,7 +509,8 @@ def ask_counselor_question(state: AsyncState, user_input: str = None) -> str:
             conversation_context += f"A{i}: {qa.get('answer', '')}\n\n"
     
     try:
-        counselor_llm = llm.with_structured_output(CounselorQuestion)
+        # Use regular LLM call instead of structured output to avoid validation errors
+        counselor_llm = llm
         
         # Check if LLM2 has provided root cause analysis
         llm2_guidance = ""
@@ -299,51 +535,119 @@ def ask_counselor_question(state: AsyncState, user_input: str = None) -> str:
         else:
             print("🔍 No LLM2 insights yet - LLM1 operating independently")
         
-        # Create SIMPLE, DIRECT prompt that forces correct behavior
+        # Create BALANCED CONVERSATIONAL prompt based on sample.txt style
         prompt_content = f"""
-        You are a caring human friend helping someone who needs support.
-        
+        You are a skilled counselor who balances insightful observations with strategic questions. Study this conversation style:
+
+        EXAMPLE CONVERSATION FLOW:
+        User: "I'm stressed about my engineering exam. I can't focus and feel like giving up."
+        Counselor: "That level of stress sounds overwhelming. What happens when you think about not doing well on this exam?"
+        User: "My parents will be disappointed. They've sacrificed so much for my coaching."
+        Counselor: "It sounds like there's a lot of pressure around not letting your parents down. What would happen if you did disappoint them?"
+        User: "They'd still love me, but they've always been proud when I do well in math. It's like that's how they see me."
+        Counselor: "So part of this stress might be about maintaining that image of who they think you are. Is that the same image you have of yourself?"
+
+        CURRENT CONVERSATION:
         User just said: "{user_input if user_input else state.original_question}"
         
         {conversation_context}
         {llm2_guidance}
+
+        YOUR RESPONSE STYLE:
         
-        MANDATORY RESPONSE FORMAT:
+        🎯 BALANCE: Mix observations with questions (don't just ask questions!)
         
-        1. START WITH: "I hear that you're [quote their exact words]"
-        2. GIVE EMPATHY: 2-3 sentences of comfort and understanding
-        3. SAY: "Don't worry, this will be okay"
-        4. THEN: Ask ONE deep question OR give helpful advice
+        GOOD PATTERNS:
+        ✅ "That level of [emotion] sounds [acknowledgment]. [Strategic question]?"
+        ✅ "It sounds like [deeper insight]. [Follow-up question]?"
+        ✅ "So [reframe their situation]. [Explore contradiction/deeper layer]?"
+        ✅ Make insightful observations that show you understand the deeper dynamics
+        ✅ Ask questions that build logically on what they just revealed
         
-        ABSOLUTELY FORBIDDEN - NEVER ASK THESE:
-        ❌ "What do you think you could say to..."
-        ❌ "How do you think you could..."
-        ❌ "What are some ways you can..."
-        ❌ "What would you tell..."
-        ❌ "What's one thing you could do..."
+        BAD PATTERNS:
+        ❌ Just asking "How does that make you feel?"
+        ❌ Staying surface-level on topics they've rejected
+        ❌ Asking multiple questions in one response
+        ❌ Being purely question-based without insights
         
-        These are questions the USER should ask YOU, not the other way around!
+        CONVERSATION STRATEGY:
+        1. Start with empathetic observation that shows understanding
+        2. Identify the deeper dynamic or pattern you're noticing
+        3. Ask ONE strategic question that explores the root cause
+        4. Build each response on their previous answer
         
-        WHEN USER NEEDS HELP - GIVE SPECIFIC ADVICE:
-        ✅ "Here's what you could say to them..."
-        ✅ "I suggest you try this approach..."
-        ✅ "You could start the conversation by..."
+        {"🚨 USER REJECTED TOPIC - EXPLORE THE DEEPER 'WHY' BEHIND THE REJECTION!" if user_rejecting_advice else ""}
+        {"🚨 USER ASKED FOR HELP - GIVE CONCRETE ADVICE WITH UNDERSTANDING!" if user_asking_for_help else ""}
         
-        {"🚨 USER ASKED FOR HELP - GIVE CONCRETE ADVICE NOW!" if user_asking_for_help else ""}
-        {"🚨 USER SHARED NEW INFO - ACKNOWLEDGE IT!" if user_providing_new_info else ""}
+        BE CONVERSATIONAL, INSIGHTFUL, AND STRATEGIC - LIKE THE SAMPLE CONVERSATION.
         
-        BE A HELPFUL HUMAN FRIEND, NOT A THERAPIST WHO ONLY ASKS QUESTIONS.
+        🔧 SMART ACTION INTEGRATION:
+        When giving advice or suggestions, ALSO suggest specific actions:
+        ✅ "Let me help you create a structured study plan in your Notion workspace..."
+        ✅ "I can schedule specific study sessions for you based on this timeline..."
+        ✅ "Would you like me to break this goal into actionable tasks you can track?"
+        
+        SUGGEST CONCRETE ACTIONS, NOT JUST INSIGHTS!
+        
+        💬 NATURAL CONVERSATION FLOW:
+        - Be warm, empathetic, and human-like
+        - Ask follow-up questions to deepen understanding
+        - Validate their feelings and experiences
+        - Use natural transitions between topics
+        - End conversations warmly, not abruptly
+        - If they want to change direction, go with them
+        - If they want to end, give a supportive closing
+        
+        🤖 MCP TOOL INTEGRATION:
+        When user asks for help with tasks, goals, or scheduling, you can trigger MCP tools:
+        - If they want to create a task: Say "I'll create that task for you in Notion" then call create_notion_task()
+        - If they want to plan something: Say "Let me break that down into steps" then call plan_tasks()
+        - If they want to schedule: Say "I'll add that to your schedule" then call add_event()
+        
+        USE THESE FUNCTION CALLS WHEN APPROPRIATE:
+        - create_notion_task(title, content)
+        - plan_tasks(goal, deadline, max_steps)
+        - add_event(title, start, end, description)
+        
+        🎯 AUTOMATIC ACTION MODE TRIGGERS:
+        TRIGGER ACTION MODE in these situations:
+        1. After 7-8 questions/responses from you (conversation getting long)
+        2. When you identify root cause (childhood trauma, family patterns, etc.)
+        3. When you mention: "root cause", "core issue", "underlying pattern", "learned very young", "that little child", "stemming from"
+        
+        ACTION MODE FLOW:
+        1. Give your insightful response about the root cause
+        2. Add: "Now that we've identified the core issue, let me help you take action:"
+        3. Create specific tasks: create_notion_task("Work on boundary setting", "Practice saying no in low-stakes situations")
+        4. Schedule follow-up: add_event("Follow-up session", "next week", "Check progress on boundary work")
+        
+        ⚠️ IMPORTANT: Only trigger action mode ONCE per conversation. After offering action, wait for user response.
+        If user confirms (says "yes", "ok", "create them"), then actually create the tasks.
+        If user declines or changes topic, continue normal conversation without repeating action offers.
+        
+        🔄 POST-ACTION MODE FLOW:
+        After action mode is triggered and tasks are created/offered:
+        1. If user wants to modify tasks: "I'd like to change the tasks" → Return to counselor mode, discuss modifications
+        2. If user wants to talk more: "Can we discuss this further?" → Continue normal conversation
+        3. If user wants to end: "I think we're done" → Give a warm, supportive closing
+        4. If user asks new questions: Answer normally as a counselor, don't repeat action offers
+        
+        🎯 CONVERSATION ENDING:
+        End conversations naturally and warmly:
+        - "I'm glad we could work through this together. Remember, change takes time and you're taking important steps."
+        - "You've shown real courage in exploring this. Take care of yourself."
+        - "I'm here whenever you need to talk. You're not alone in this journey."
+        - AVOID abrupt endings like "That's all" or "Goodbye"
+        
+        CONVERSATION LENGTH CHECK: You are currently on response #{len(state.qa_pairs) + 1}
+        {"🚨 TRIGGER ACTION MODE - CONVERSATION IS LONG ENOUGH!" if len(state.qa_pairs) >= 6 and not state.action_mode_triggered else ""}
+        {"✅ ACTION MODE ALREADY TRIGGERED - Continue normal conversation, don't repeat action offers." if state.action_mode_triggered else ""}
         """
         
         # LLM1 generates response (guided by LLM2 if available)
         result = counselor_llm.invoke([
             {"role": "user", "content": prompt_content}
         ])
-        
-        # OVERRIDE: If user asked for help but LLM still gave a question, force advice
-        # Check if response is a question (ends with ? OR contains question words)
-        is_question = (result.question.endswith('?') or 
-                      any(word in result.question.lower() for word in ['what', 'how', 'when', 'where', 'why', 'which', 'who', 'can you', 'do you', 'have you']))
         
         # AGGRESSIVE OVERRIDE: User explicitly asked for suggestions/advice
         if user_asking_for_help:
@@ -381,27 +685,35 @@ def ask_counselor_question(state: AsyncState, user_input: str = None) -> str:
             advice_result = advice_llm.invoke([{"role": "user", "content": generic_advice_prompt}])
             question = advice_result.content
             approach = "PSYCHOLOGICAL"
-            reasoning = "Override advice generation"
         else:
-            question = result.question
-            approach = result.approach
-            reasoning = result.reasoning
+            # Normal response flow
+            result = counselor_llm.invoke([{"role": "user", "content": prompt_content}])
+            question = result.content.strip()
+            approach = "PSYCHOLOGICAL"
         
-        new_qa_pair = {
-            "question": question, 
-            "answer": "", 
-            "approach": approach,
-            "reasoning": reasoning,
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
+        response_text = result.content
         
-        state.qa_pairs.append(new_qa_pair)
+        # Check if AI wants to use MCP tools and execute them
+        if "create_notion_task(" in response_text:
+            response_text = execute_mcp_tools(response_text, state)
+        elif "plan_tasks(" in response_text:
+            response_text = execute_mcp_tools(response_text, state)
+        elif "add_event(" in response_text:
+            response_text = execute_mcp_tools(response_text, state)
+        
+        # Store the Q&A pair
+        state.qa_pairs.append({
+            "question": user_input if user_input else state.original_question,
+            "answer": response_text,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        return response_text
         
         # Show approach indicator (brief)
         approach_icon = "🧠" if approach.lower() == "psychological" else "🏥"
         print(f"{approach_icon} [{approach.upper()}]")
         
-        return question
         
     except Exception as e:
         print(f"❌ Error generating question: {e}")

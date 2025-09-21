@@ -1,7 +1,7 @@
-import { AIChat } from "@/components/AIChat";
+import EnhancedAIChat from "../components/EnhancedAIChat";
 
 const Index = () => {
-  return <AIChat />;
+  return <EnhancedAIChat />;
 };
 
 export default Index;
