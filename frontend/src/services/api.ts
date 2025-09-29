@@ -1,6 +1,27 @@
 // API service layer for Universal AI Assistant
-const API_BASE_URL = 'http://localhost:8000';
-const WS_BASE_URL = 'ws://localhost:8000';
+const RAW_API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || '';
+const RAW_WS_BASE_URL = (import.meta as any).env?.VITE_WS_BASE_URL || '';
+
+function normalizeBaseUrl(url: string): string {
+  if (!url) return '';
+  return url.endsWith('/') ? url.slice(0, -1) : url;
+}
+
+function deriveWsBaseUrlFromApi(apiBaseUrl: string): string {
+  if (!apiBaseUrl) return '';
+  try {
+    const u = new URL(apiBaseUrl);
+    const proto = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${u.host}`;
+  } catch {
+    return '';
+  }
+}
+
+const API_BASE_URL = normalizeBaseUrl(RAW_API_BASE_URL);
+const WS_BASE_URL = normalizeBaseUrl(
+  RAW_WS_BASE_URL || deriveWsBaseUrlFromApi(API_BASE_URL) || `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`
+);
 
 // Types
 export interface ChatMessage {
@@ -129,7 +150,8 @@ export class ApiService {
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
-    const url = `${API_BASE_URL}${endpoint}`;
+    const base = API_BASE_URL || '';
+    const url = `${base}${endpoint}`;
     
     const config: RequestInit = {
       headers: {
@@ -183,21 +205,21 @@ export class ApiService {
 
   // MCP Tools endpoints
   static async planTasks(request: TaskPlanRequest): Promise<ApiResponse<any>> {
-    return this.request<ApiResponse<any>>('/api/tools/plan-tasks', {
+    return this.request<ApiResponse<any>>('/api/mcp/plan-tasks', {
       method: 'POST',
       body: JSON.stringify(request),
     });
   }
 
   static async getSchedule(request: ScheduleRequest): Promise<ApiResponse<any>> {
-    return this.request<ApiResponse<any>>('/api/tools/get-schedule', {
+    return this.request<ApiResponse<any>>('/api/mcp/schedule', {
       method: 'POST',
       body: JSON.stringify(request),
     });
   }
 
   static async addEvent(request: EventRequest): Promise<ApiResponse<any>> {
-    return this.request<ApiResponse<any>>('/api/tools/add-event', {
+    return this.request<ApiResponse<any>>('/api/mcp/add-event', {
       method: 'POST',
       body: JSON.stringify(request),
     });
