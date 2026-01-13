@@ -26,7 +26,7 @@ import re
 import hashlib
 import json
 import time
-
+# Load environment variables
 class RobustKnowledgeGraphBuilder:
     """
     Builds a knowledge graph from a collection of documents with dynamic schema.
@@ -38,7 +38,7 @@ class RobustKnowledgeGraphBuilder:
         try:
             self.llm = ChatGroq(
                 groq_api_key=groq_api_key,
-                model_name="gemma2-9b-it",
+                model_name="qwen/qwen3-32b",
                 temperature=0.1,
                 max_tokens=4096
             )
