@@ -1,0 +1,19 @@
+# AI Assistant Backend Deployment on Render
+
+services:
+  - type: web
+    name: ai-assistant-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api_server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: NEO4J_URI
+        sync: false
+      - key: NEO4J_USERNAME
+        sync: false
+      - key: NEO4J_PASSWORD
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.11"

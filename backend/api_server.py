@@ -1,136 +1,81 @@
 """
-Cleaned & refactored FastAPI server for Universal AI Assistant
-- Removed redundant imports, dead code, and defensive try/except spam
-- Centralized session creation and teardown
-- Clear separation: startup, session lifecycle, transport (HTTP / WS)
-- Thread-safe background LLM2 worker handling
-- Production-ready structure (easy to extend to Redis, auth, etc.)
+FastAPI server for Simplified AI Assistant
+Clean API with single LLM + KG context retrieval.
 """
 
 import os
 import json
 import logging
-import threading
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from langchain_groq import ChatGroq
 
-from main import AsyncState, ask_counselor_question, llm2_background_worker
-from KG.kg_builder import RobustKnowledgeGraphBuilder
+from main import SimpleChatBot, ChatSession, init_chatbot
 
-# -----------------------------------------------------------------------------
-# Logging
-# -----------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("api_server")
 
-# -----------------------------------------------------------------------------
-# Global runtime state (replace with Redis later if needed)
-# -----------------------------------------------------------------------------
-class GlobalState:
+
+# Global state
+class AppState:
     def __init__(self):
-        self.sessions: Dict[str, AsyncState] = {}
-        self.kg_builder: Optional[RobustKnowledgeGraphBuilder] = None
-        self.llm: Optional[ChatGroq] = None
+        self.sessions: Dict[str, ChatSession] = {}
+        self.chatbot: Optional[SimpleChatBot] = None
+        self.kg_builder = None
 
-STATE = GlobalState()
+STATE = AppState()
 
-# -----------------------------------------------------------------------------
-# API Models
-# -----------------------------------------------------------------------------
+
+# Request/Response models
 class ChatMessage(BaseModel):
     message: str
     session_id: Optional[str] = None
+
 
 class ChatResponse(BaseModel):
     response: str
     session_id: str
     timestamp: str
-    metadata: Dict[str, Any]
 
-# -----------------------------------------------------------------------------
+
 # Session helpers
-# -----------------------------------------------------------------------------
-
-def create_session(session_id: str) -> AsyncState:
-    state = AsyncState()
-    state.session_id = session_id
-    state.kg_builder = STATE.kg_builder
-    state.conversation_active = True
-
-    STATE.sessions[session_id] = state
-
-    thread = threading.Thread(
-        target=llm2_background_worker,
-        args=(state, STATE.llm),
-        daemon=True,
-    )
-    thread.start()
-
-    logger.info("Session started: %s", session_id)
-    return state
-
-
-def get_session(session_id: str) -> AsyncState:
+def get_or_create_session(session_id: str) -> ChatSession:
     if session_id not in STATE.sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        session = ChatSession(session_id=session_id, kg_builder=STATE.kg_builder)
+        STATE.sessions[session_id] = session
+        logger.info(f"Created session: {session_id}")
     return STATE.sessions[session_id]
 
 
 def close_session(session_id: str) -> None:
-    state = STATE.sessions.pop(session_id, None)
-    if state:
-        state.conversation_active = False
-        logger.info("Session closed: %s", session_id)
+    if session_id in STATE.sessions:
+        del STATE.sessions[session_id]
+        logger.info(f"Closed session: {session_id}")
 
-# -----------------------------------------------------------------------------
+
 # App lifespan
-# -----------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     load_dotenv()
-
-    groq_key = os.getenv("GROQ_API_KEY")
-    neo4j_uri = os.getenv("NEO4J_URI")
-    neo4j_user = os.getenv("NEO4J_USERNAME")
-    neo4j_pass = os.getenv("NEO4J_PASSWORD")
-
-    if not groq_key:
-        raise RuntimeError("GROQ_API_KEY missing")
-
-    STATE.llm = ChatGroq(
-        api_key=groq_key,
-        model="llama-3.1-8b-instant",
-        temperature=0.7,
-    )
-    logger.info("LLM initialized")
-
-    if all([neo4j_uri, neo4j_user, neo4j_pass]):
-        STATE.kg_builder = RobustKnowledgeGraphBuilder(
-            groq_key, neo4j_uri, neo4j_user, neo4j_pass
-        )
-        logger.info("Knowledge Graph initialized")
-    else:
-        logger.warning("Neo4j credentials missing — KG disabled")
-
+    
+    STATE.chatbot, STATE.kg_builder = init_chatbot()
+    logger.info("Chatbot initialized successfully")
+    
     yield
-
+    
     logger.info("Server shutting down")
-    for sid in list(STATE.sessions.keys()):
-        close_session(sid)
+    STATE.sessions.clear()
 
-# -----------------------------------------------------------------------------
+
 # FastAPI app
-# -----------------------------------------------------------------------------
 app = FastAPI(
-    title="Universal AI Assistant API",
-    version="1.0.0",
+    title="AI Assistant API",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -141,9 +86,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------------------------------------------------------------
-# Health
-# -----------------------------------------------------------------------------
+
+# Health endpoint
 @app.get("/health")
 async def health():
     return {
@@ -153,114 +97,89 @@ async def health():
         "timestamp": datetime.utcnow().isoformat(),
     }
 
-# -----------------------------------------------------------------------------
-# WebSocket Chat
-# -----------------------------------------------------------------------------
+
+# WebSocket chat
 @app.websocket("/ws/chat/{session_id}")
 async def chat_ws(ws: WebSocket, session_id: str):
     await ws.accept()
-
-    state = STATE.sessions.get(session_id) or create_session(session_id)
+    session = get_or_create_session(session_id)
 
     try:
         while True:
-            payload = json.loads(await ws.receive_text())
+            data = await ws.receive_text()
+            payload = json.loads(data)
             user_message = payload.get("message", "").strip()
+            
             if not user_message:
                 continue
 
-            if not state.original_question:
-                state.original_question = user_message
-                response = ask_counselor_question(state, llm=STATE.llm)
-            else:
-                response = ask_counselor_question(state, user_message, llm=STATE.llm)
+            response = STATE.chatbot.chat(user_message, session)
 
             await ws.send_text(json.dumps({
                 "response": response,
                 "session_id": session_id,
                 "timestamp": datetime.utcnow().isoformat(),
-                "metadata": {
-                    "qa_pairs": len(state.qa_pairs),
-                    "llm2_analyzing": state.llm2_analyzing,
-                    "has_insights": state.llm2_insights is not None,
-                },
             }))
 
     except WebSocketDisconnect:
         close_session(session_id)
 
-# -----------------------------------------------------------------------------
-# HTTP Chat (fallback / REST)
-# -----------------------------------------------------------------------------
+
+# HTTP chat endpoint
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_http(req: ChatMessage):
     session_id = req.session_id or f"session_{int(datetime.utcnow().timestamp())}"
-    state = STATE.sessions.get(session_id) or create_session(session_id)
+    session = get_or_create_session(session_id)
 
     if not req.message.strip():
-        response = ask_counselor_question(state, llm=STATE.llm)
-    else:
-        response = ask_counselor_question(state, req.message, llm=STATE.llm)
+        raise HTTPException(400, "Message cannot be empty")
+
+    response = STATE.chatbot.chat(req.message, session)
 
     return ChatResponse(
         response=response,
         session_id=session_id,
         timestamp=datetime.utcnow().isoformat(),
-        metadata={
-            "qa_pairs": len(state.qa_pairs),
-            "llm2_analyzing": state.llm2_analyzing,
-            "has_insights": state.llm2_insights is not None,
-        },
     )
 
-# -----------------------------------------------------------------------------
-# Sessions & KG
-# -----------------------------------------------------------------------------
+
+# Session management
 @app.get("/api/sessions")
 async def list_sessions():
     return {
         "sessions": [
             {
                 "session_id": sid,
-                "qa_pairs": len(s.qa_pairs),
-                "active": s.conversation_active,
-                "has_insights": s.llm2_insights is not None,
+                "message_count": len(s.messages),
             }
             for sid, s in STATE.sessions.items()
         ]
     }
 
-@app.get("/api/kg/{session_id}")
-async def session_kg(session_id: str):
-    if not STATE.kg_builder:
-        raise HTTPException(503, "Knowledge Graph disabled")
-
-    state = get_session(session_id)
-    analysis = STATE.kg_builder.analyze_therapy_patterns(
-        session_id=session_id,
-        current_qa_pairs=state.qa_pairs,
-    )
-
-    return {
-        "session_id": session_id,
-        "analysis": analysis,
-        "insights": state.llm2_insights,
-    }
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str):
     close_session(session_id)
     return {"success": True}
 
-# -----------------------------------------------------------------------------
-# Entrypoint
-# -----------------------------------------------------------------------------
+
+# KG analysis (if available)
+@app.get("/api/kg/{session_id}")
+async def session_kg(session_id: str):
+    if not STATE.kg_builder:
+        raise HTTPException(503, "Knowledge Graph not available")
+
+    session = STATE.sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+
+    return {
+        "session_id": session_id,
+        "message_count": len(session.messages),
+        "kg_enabled": True,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run(
-        "api_server_cleaned:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True,
-    )
+    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)
